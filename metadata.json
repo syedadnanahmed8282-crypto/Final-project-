@@ -1,0 +1,8 @@
+{
+  "name": "Smart Manager",
+  "description": "টাকা-হিসাব: একটি সহজ ও সুন্দর অফলাইন ব্যক্তিগত খরচ ট্র্যাকার এবং বাজেট প্ল্যানার অ্যাপ।",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
