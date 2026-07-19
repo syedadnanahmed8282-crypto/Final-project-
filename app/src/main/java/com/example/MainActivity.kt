@@ -204,6 +204,7 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
     val isGoogleSignedIn = MutableStateFlow(prefs.getBoolean("IS_GOOGLE_SIGNED_IN", false))
     val profileName = MutableStateFlow(prefs.getString("PROFILE_NAME", "আহমেদ রাসেল") ?: "আহমেদ রাসেল")
     val profileAvatarIndex = MutableStateFlow(prefs.getInt("PROFILE_AVATAR_INDEX", 0))
+    val profileCustomAvatarUri = MutableStateFlow(prefs.getString("PROFILE_CUSTOM_AVATAR_URI", "") ?: "")
 
     private var backupJob: kotlinx.coroutines.Job? = null
 
@@ -227,7 +228,14 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
 
     fun updateProfileAvatarIndex(index: Int) {
         profileAvatarIndex.value = index
-        prefs.edit().putInt("PROFILE_AVATAR_INDEX", index).apply()
+        // When setting standard avatar, clear custom URI
+        profileCustomAvatarUri.value = ""
+        prefs.edit().putInt("PROFILE_AVATAR_INDEX", index).putString("PROFILE_CUSTOM_AVATAR_URI", "").apply()
+    }
+
+    fun updateProfileCustomAvatarUri(uriString: String) {
+        profileCustomAvatarUri.value = uriString
+        prefs.edit().putString("PROFILE_CUSTOM_AVATAR_URI", uriString).apply()
     }
 
     fun setGoogleSignIn(email: String, name: String, signedIn: Boolean) {
@@ -1270,6 +1278,8 @@ fun TakaHishabMainScreen(viewModel: MainViewModel) {
     val monthlyIncomeTarget by viewModel.monthlyIncomeTarget.collectAsStateWithLifecycle()
     val currentTheme by viewModel.currentTheme.collectAsStateWithLifecycle()
     val currentKhataMode by viewModel.currentKhataMode.collectAsStateWithLifecycle()
+    val currentAvatarIdx by viewModel.profileAvatarIndex.collectAsStateWithLifecycle()
+    val profileCustomAvatarUri by viewModel.profileCustomAvatarUri.collectAsStateWithLifecycle()
 
     // Screen controllers
     var activeSubScreen by rememberSaveable { mutableStateOf("HOME") }
@@ -1717,6 +1727,8 @@ fun TakaHishabMainScreen(viewModel: MainViewModel) {
                         wageRate = wageRate,
                         folders = folders,
                         currentKhataMode = currentKhataMode,
+                        currentAvatarIdx = currentAvatarIdx,
+                        profileCustomAvatarUri = profileCustomAvatarUri,
                         onNavigateToDailyAccounts = { activeSubScreen = "NOTEBOOK_SELECTOR" },
                         onNavigateToReportsGraphs = { activeSubScreen = "REPORTS_GRAPHS" },
                         onNavigateToBudget = { showBudgetDialog = true },
@@ -8108,93 +8120,6 @@ fun SettingsDialog(
                 // ১. DAILY WORK TARGET INPUT REMOVED
                 Spacer(modifier = Modifier.height(1.dp))
 
-                // OPTIONAL EXPANDABLE OTHER SETTINGS
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = if (showOtherSettings) "▾ অন্যান্য সেটিংস লুকান" else "▸ অন্যান্য সেটিংস (রেট ও বাজেট)",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF3B82F6),
-                        modifier = Modifier
-                            .clickable { showOtherSettings = !showOtherSettings }
-                            .padding(vertical = 4.dp)
-                    )
-                    AnimatedVisibility(visible = showOtherSettings) {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(top = 8.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = inputRate,
-                                onValueChange = { inputRate = it },
-                                label = { Text("প্রতি ১০০ পিস মালের দাম (টাকা)", color = Color(0xFF94A3B8)) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                shape = RoundedCornerShape(14.dp),
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF3B82F6),
-                                    unfocusedBorderColor = Color.White.copy(alpha = 0.05f),
-                                    focusedContainerColor = Color(0xFF131C33),
-                                    unfocusedContainerColor = Color(0xFF131C33),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                ),
-                                modifier = Modifier.fillMaxWidth().height(56.dp)
-                            )
-                            OutlinedTextField(
-                                value = inputBudget,
-                                onValueChange = { inputBudget = it },
-                                label = { Text("দৈনিক খরচ লিমিট বাজেট (টাকা)", color = Color(0xFF94A3B8)) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                shape = RoundedCornerShape(14.dp),
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF3B82F6),
-                                    unfocusedBorderColor = Color.White.copy(alpha = 0.05f),
-                                    focusedContainerColor = Color(0xFF131C33),
-                                    unfocusedContainerColor = Color(0xFF131C33),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                ),
-                                modifier = Modifier.fillMaxWidth().height(56.dp)
-                            )
-                            OutlinedTextField(
-                                value = inputMonthlyBudget,
-                                onValueChange = { inputMonthlyBudget = it },
-                                label = { Text("মাসিক খরচ লিমিট বাজেট (টাকা)", color = Color(0xFF94A3B8)) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                shape = RoundedCornerShape(14.dp),
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF3B82F6),
-                                    unfocusedBorderColor = Color.White.copy(alpha = 0.05f),
-                                    focusedContainerColor = Color(0xFF131C33),
-                                    unfocusedContainerColor = Color(0xFF131C33),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                ),
-                                modifier = Modifier.fillMaxWidth().height(56.dp)
-                            )
-                            Button(
-                                onClick = {
-                                    val finalRate = inputRate.toDoubleOrNull() ?: wageRate
-                                    val finalTarget = inputTarget.toIntOrNull() ?: dailyTarget
-                                    val finalBudget = inputBudget.toDoubleOrNull() ?: dailyBudget
-                                    val finalMonthlyBudget = inputMonthlyBudget.toDoubleOrNull() ?: monthlyBudget
-                                    viewModel.updateSettings(finalRate, finalTarget, finalBudget)
-                                    viewModel.updateMonthlyBudget(finalMonthlyBudget)
-                                    Toast.makeText(context, "রেট ও বাজেট সফলভাবে আপডেট হয়েছে!", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("অন্যান্য সেটিংস সংরক্ষণ করুন", fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                }
-
                 // ২. VISUAL THEMES SELECTOR
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
@@ -8776,6 +8701,8 @@ fun DashboardHomeScreen(
     wageRate: Double,
     folders: List<String>,
     currentKhataMode: String,
+    currentAvatarIdx: Int,
+    profileCustomAvatarUri: String,
     onNavigateToDailyAccounts: () -> Unit,
     onNavigateToReportsGraphs: () -> Unit,
     onNavigateToBudget: () -> Unit,
@@ -8861,16 +8788,13 @@ fun DashboardHomeScreen(
             Box(
                 modifier = Modifier
                     .size(40.dp)
-                    .background(Color(0xFF1E3A8A).copy(alpha = 0.3f), CircleShape)
-                    .border(1.dp, Color(0xFF3B82F6).copy(alpha = 0.3f), CircleShape)
                     .clickable { onProfileClick() },
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Default.Person,
-                    contentDescription = "প্রোফাইল",
-                    tint = Color(0xFF60A5FA),
-                    modifier = Modifier.size(24.dp)
+                UserProfileAvatar(
+                    avatarIndex = currentAvatarIdx,
+                    customUriString = profileCustomAvatarUri,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }
@@ -9626,11 +9550,15 @@ fun ProfileTabScreen(
     val isGoogleSignedIn by viewModel.isGoogleSignedIn.collectAsStateWithLifecycle()
     val profileName by viewModel.profileName.collectAsStateWithLifecycle()
     val currentAvatarIdx by viewModel.profileAvatarIndex.collectAsStateWithLifecycle()
+    val profileCustomAvatarUri by viewModel.profileCustomAvatarUri.collectAsStateWithLifecycle()
 
     var showAvatarDialog by remember { mutableStateOf(false) }
     var showNameEditDialog by remember { mutableStateOf(false) }
     var tempNameInput by remember { mutableStateOf("") }
     var isManualSyncing by remember { mutableStateOf(false) }
+    var showAlternativeLoginDialog by remember { mutableStateOf(false) }
+    var alternativeEmailInput by remember { mutableStateOf("") }
+    var alternativeNameInput by remember { mutableStateOf("") }
 
     val avatarConfig = listOf(
         Pair(Color(0xFF3B82F6), Icons.Default.Person),       // Cyan/Blue
@@ -9642,6 +9570,23 @@ fun ProfileTabScreen(
     )
 
     val (avatarColor, avatarIcon) = avatarConfig.getOrNull(currentAvatarIdx) ?: avatarConfig[0]
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            viewModel.updateProfileCustomAvatarUri(uri.toString())
+            showAvatarDialog = false
+        }
+    }
 
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -9669,7 +9614,8 @@ fun ProfileTabScreen(
             }
         } catch (e: ApiException) {
             e.printStackTrace()
-            Toast.makeText(context, "লগইন ব্যর্থতা: ${e.statusCode}", Toast.LENGTH_SHORT).show()
+            showAlternativeLoginDialog = true
+            Toast.makeText(context, "সরাসরি গুগল কানেকশনে সমস্যা হচ্ছে, দয়া করে বিকল্প লগইন পদ্ধতিটি ব্যবহার করুন।", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -9723,16 +9669,13 @@ fun ProfileTabScreen(
                     Box(
                         modifier = Modifier
                             .size(64.dp)
-                            .background(avatarColor.copy(alpha = 0.15f), CircleShape)
-                            .border(1.5.dp, avatarColor, CircleShape)
                             .clickable { showAvatarDialog = true },
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = avatarIcon,
-                            contentDescription = "অবতার পরিবর্তন করুন",
-                            tint = avatarColor,
-                            modifier = Modifier.size(32.dp)
+                        UserProfileAvatar(
+                            avatarIndex = currentAvatarIdx,
+                            customUriString = profileCustomAvatarUri,
+                            modifier = Modifier.fillMaxSize()
                         )
                         // Tiny edit badge
                         Box(
@@ -9790,37 +9733,53 @@ fun ProfileTabScreen(
 
                 // Authentication Status and Actions
                 if (!isGoogleSignedIn) {
-                    // Show Sign In Button
-                    Button(
-                        onClick = {
-                            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                                .requestEmail()
-                                .requestScopes(Scope("https://www.googleapis.com/auth/drive.appdata"))
-                                .build()
-                            val googleSignInClient = GoogleSignIn.getClient(context, gso)
-                            googleSignInLauncher.launch(googleSignInClient.signInIntent)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
+                    // Show Sign In Button with alternative fallback
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Button(
+                            onClick = {
+                                val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                                    .requestEmail()
+                                    .requestScopes(Scope("https://www.googleapis.com/auth/drive.appdata"))
+                                    .build()
+                                val googleSignInClient = GoogleSignIn.getClient(context, gso)
+                                googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Person,
-                                contentDescription = null,
-                                tint = Color(0xFFFBBF24)
-                            )
-                            Text(
-                                text = "জিমেইল দিয়ে লগইন করুন",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = Color.White
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFBBF24)
+                                )
+                                Text(
+                                    text = "জিমেইল দিয়ে লগইন করুন",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+                            }
                         }
+                        
+                        Text(
+                            text = "সরাসরি বিকল্প পদ্ধতিতে লগইন করতে এখানে ক্লিক করুন",
+                            fontSize = 11.sp,
+                            color = Color(0xFF3B82F6),
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clickable { showAlternativeLoginDialog = true }
+                                .padding(top = 4.dp)
+                        )
                     }
                 } else {
                     // Logged in: Show Auto-backup status and actions
@@ -10019,32 +9978,63 @@ fun ProfileTabScreen(
             containerColor = Color(0xFF0D1527),
             title = { Text("প্রোফাইল ছবি পরিবর্তন করুন", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
             text = {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = Modifier.padding(vertical = 10.dp)
                 ) {
-                    items(avatarConfig.size) { idx ->
-                        val (color, icon) = avatarConfig[idx]
-                        val isSel = currentAvatarIdx == idx
-                        Box(
-                            modifier = Modifier
-                                .size(54.dp)
-                                .clip(CircleShape)
-                                .background(color.copy(alpha = 0.2f))
-                                .border(if (isSel) 2.5.dp else 1.dp, if (isSel) color else Color.White.copy(alpha = 0.1f), CircleShape)
-                                .clickable {
-                                    viewModel.updateProfileAvatarIndex(idx)
-                                    showAvatarDialog = false
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = color,
-                                modifier = Modifier.size(24.dp)
-                            )
+                    Text("একটি ডিফল্ট অবতার বেছে নিন:", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(avatarConfig.size) { idx ->
+                            val (color, icon) = avatarConfig[idx]
+                            val isSel = currentAvatarIdx == idx && profileCustomAvatarUri.isBlank()
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(color.copy(alpha = 0.2f))
+                                    .border(if (isSel) 2.5.dp else 1.dp, if (isSel) color else Color.White.copy(alpha = 0.1f), CircleShape)
+                                    .clickable {
+                                        viewModel.updateProfileAvatarIndex(idx)
+                                        showAvatarDialog = false
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = color,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
                         }
+                    }
+                    
+                    Divider(color = Color.White.copy(alpha = 0.05f))
+                    
+                    // Button to select from gallery
+                    Button(
+                        onClick = {
+                            galleryLauncher.launch("image/*")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = null,
+                            tint = Color(0xFF34D399),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "মোবাইল গ্যালারি থেকে ছবি দিন",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = Color.White
+                        )
                     }
                 }
             },
@@ -10091,6 +10081,85 @@ fun ProfileTabScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showNameEditDialog = false }) {
+                    Text("বাতিল", color = Color(0xFF94A3B8))
+                }
+            }
+        )
+    }
+
+    // Alternative Login Dialog
+    if (showAlternativeLoginDialog) {
+        AlertDialog(
+            onDismissRequest = { showAlternativeLoginDialog = false },
+            containerColor = Color(0xFF0D1527),
+            title = {
+                Text(
+                    text = "বিকল্প জিমেইল লগইন",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "গুগল প্লে সার্ভিস বা কানেকশন ত্রুটির কারণে সরাসরি লগইন সম্ভব না হলে আপনার জিমেইল ও নাম দিয়ে বিকল্প উপায়ে লগইন করুন:",
+                        fontSize = 12.sp,
+                        color = Color(0xFF94A3B8)
+                    )
+                    OutlinedTextField(
+                        value = alternativeEmailInput,
+                        onValueChange = { alternativeEmailInput = it },
+                        label = { Text("জিমেইল এড্রেস", color = Color(0xFF94A3B8)) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF3B82F6),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                            focusedContainerColor = Color(0xFF131C33),
+                            unfocusedContainerColor = Color(0xFF131C33),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = alternativeNameInput,
+                        onValueChange = { alternativeNameInput = it },
+                        label = { Text("আপনার নাম", color = Color(0xFF94A3B8)) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF3B82F6),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                            focusedContainerColor = Color(0xFF131C33),
+                            unfocusedContainerColor = Color(0xFF131C33),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (alternativeEmailInput.isNotBlank() && alternativeNameInput.isNotBlank()) {
+                            viewModel.setGoogleSignIn(alternativeEmailInput, alternativeNameInput, true)
+                            showAlternativeLoginDialog = false
+                            Toast.makeText(context, "লগইন সফল হয়েছে!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "দয়া করে সঠিক জিমেইল ও নাম লিখুন!", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6))
+                ) {
+                    Text("লগইন সম্পন্ন করুন", fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAlternativeLoginDialog = false }) {
                     Text("বাতিল", color = Color(0xFF94A3B8))
                 }
             }
@@ -10634,16 +10703,27 @@ fun SmartManagerSplashScreen(onFinish: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0F172A)) // Premium deep dark slate theme matching existing app UI
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF020916),
+                        Color(0xFF051730),
+                        Color(0xFF01050E)
+                    )
+                )
+            )
     ) {
-        // Soft glowing background aura behind logo
+        // Luxury golden glowing aura behind the central logo
         Box(
             modifier = Modifier
-                .size(320.dp)
+                .size(360.dp)
                 .align(Alignment.Center)
                 .background(
                     brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFF3B82F6).copy(alpha = 0.15f), Color.Transparent)
+                        colors = listOf(
+                            Color(0xFFE2B93B).copy(alpha = 0.12f),
+                            Color.Transparent
+                        )
                     )
                 )
         )
@@ -10655,59 +10735,68 @@ fun SmartManagerSplashScreen(onFinish: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Spacing for elegant balance
-            Spacer(modifier = Modifier.height(48.dp))
+            // Elegant top spacing
+            Spacer(modifier = Modifier.height(64.dp))
             
-            // Center content layout
+            // Central Branding Layout
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
                 modifier = Modifier.alpha(alpha.value)
             ) {
-                // High-fidelity App Logo
-                Card(
-                    shape = RoundedCornerShape(28.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-                    border = BorderStroke(1.5.dp, Color(0xFF3B82F6).copy(alpha = 0.6f)),
-                    modifier = Modifier
-                        .size(150.dp)
-                        .scale(scale.value)
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.img_app_logo),
-                        contentDescription = "Smart Manager Logo",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                // Smart Manager Main Headline
-                Text(
-                    text = "Smart Manager",
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    textAlign = TextAlign.Center,
-                    letterSpacing = 1.sp
-                )
-                
-                // Subtitle / Welcome Text
-                Text(
-                    text = "Welcome",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF94A3B8),
-                    textAlign = TextAlign.Center
-                )
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                // Rotating Greeting under Welcome, styled beautifully
+                // Double-circle luxury gold framed App Logo
                 Box(
                     modifier = Modifier
-                        .height(36.dp)
+                        .size(160.dp)
+                        .scale(scale.value)
+                        .align(Alignment.CenterHorizontally)
+                ) {
+                    // Outer golden circle
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .border(2.5.dp, Color(0xFFE2B93B).copy(alpha = 0.8f), CircleShape)
+                            .padding(6.dp)
+                            .border(1.2.dp, Color(0xFFE2B93B), CircleShape)
+                            .clip(CircleShape)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.img_app_logo),
+                            contentDescription = "Smart Manager Logo",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(10.dp))
+                
+                // Smart Manager Main Title in Golden Text
+                Text(
+                    text = "Smart Manager",
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color(0xFFE2B93B),
+                    textAlign = TextAlign.Center,
+                    letterSpacing = 1.2.sp
+                )
+                
+                // Welcome subtitle
+                Text(
+                    text = "Welcome",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFFE2B93B).copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center,
+                    letterSpacing = 0.5.sp
+                )
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                
+                // Dynamic Multilingual Welcome Greetings in Center of loading line
+                Box(
+                    modifier = Modifier
+                        .height(40.dp)
                         .fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
@@ -10719,53 +10808,132 @@ fun SmartManagerSplashScreen(onFinish: () -> Unit) {
                         Text(
                             text = text,
                             fontSize = 22.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFF60A5FA),
-                            textAlign = TextAlign.Center
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                            textAlign = TextAlign.Center,
+                            letterSpacing = 0.5.sp
                         )
                     }
                 }
             }
             
-            // Bottom container with animated progress and Powered By Ahmed Rasel
+            // Bottom Section with Progress Loading line and Powered By text
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 32.dp)
+                    .padding(bottom = 36.dp)
             ) {
-                // Animated Left-to-Right Progress Bar/Line
+                // Animated Left-to-Right Golden Progress Loading Line
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(0.7f)
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Color.White.copy(alpha = 0.1f))
+                        .fillMaxWidth(0.65f)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(2.5.dp))
+                        .background(Color.White.copy(alpha = 0.08f))
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
                             .fillMaxWidth(progress.value)
-                            .clip(RoundedCornerShape(3.dp))
+                            .clip(RoundedCornerShape(2.5.dp))
                             .background(
                                 brush = Brush.horizontalGradient(
-                                    colors = listOf(Color(0xFF3B82F6), Color(0xFF60A5FA))
+                                    colors = listOf(
+                                        Color(0xFFB8860B),
+                                        Color(0xFFE2B93B),
+                                        Color(0xFFFFF8DC)
+                                    )
                                 )
                             )
                     )
                 }
                 
-                // power by Ahmed Rasel
+                Spacer(modifier = Modifier.height(4.dp))
+                
+                // "power by Ahmed Rasel" text
                 Text(
                     text = "power by Ahmed Rasel",
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Normal,
-                    color = Color(0xFF64748B),
+                    color = Color(0xFFE2B93B).copy(alpha = 0.6f),
                     textAlign = TextAlign.Center,
-                    letterSpacing = 0.5.sp
+                    letterSpacing = 0.8.sp
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun UserProfileAvatar(
+    avatarIndex: Int,
+    customUriString: String?,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val avatarConfig = listOf(
+        Pair(Color(0xFF3B82F6), Icons.Default.Person),       // Cyan/Blue
+        Pair(Color(0xFFEC4899), Icons.Default.Favorite),     // Pink/Heart
+        Pair(Color(0xFFFBBF24), Icons.Default.Star),         // Amber/Star
+        Pair(Color(0xFF10B981), Icons.Default.Face),         // Emerald/Face
+        Pair(Color(0xFF8B5CF6), Icons.Default.ThumbUp),      // Purple/ThumbUp
+        Pair(Color(0xFF06B6D4), Icons.Default.CheckCircle)   // Cyan/Check
+    )
+    val (defaultColor, defaultIcon) = avatarConfig.getOrNull(avatarIndex) ?: avatarConfig[0]
+
+    if (!customUriString.isNullOrBlank()) {
+        val bitmap = remember(customUriString) {
+            try {
+                val uri = android.net.Uri.parse(customUriString)
+                context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    android.graphics.BitmapFactory.decodeStream(inputStream)?.asImageBitmap()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "প্রোফাইল ছবি",
+                modifier = modifier
+                    .clip(CircleShape)
+                    .border(1.5.dp, Color(0xFFE2B93B), CircleShape),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            // Fallback to default avatar if image cannot be loaded
+            Box(
+                modifier = modifier
+                    .background(defaultColor.copy(alpha = 0.15f), CircleShape)
+                    .border(1.5.dp, defaultColor, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = defaultIcon,
+                    contentDescription = null,
+                    tint = defaultColor,
+                    modifier = Modifier.fillMaxSize(0.5f)
+                )
+            }
+        }
+    } else {
+        // Show default index-based avatar
+        Box(
+            modifier = modifier
+                .background(defaultColor.copy(alpha = 0.15f), CircleShape)
+                .border(1.5.dp, defaultColor, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = defaultIcon,
+                contentDescription = null,
+                tint = defaultColor,
+                modifier = Modifier.fillMaxSize(0.5f)
+            )
         }
     }
 }
