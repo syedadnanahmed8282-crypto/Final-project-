@@ -215,7 +215,12 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
     }
 
     fun updateFirebaseDbUrl(url: String) {
-        val normalizedUrl = if (url.endsWith("/")) url else "$url/"
+        var cleanUrl = url.trim()
+        if (cleanUrl.isBlank()) return
+        if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+            cleanUrl = "https://$cleanUrl"
+        }
+        val normalizedUrl = if (cleanUrl.endsWith("/")) cleanUrl else "$cleanUrl/"
         firebaseDbUrl.value = normalizedUrl
         prefs.edit().putString("FIREBASE_DB_URL", normalizedUrl).apply()
     }
@@ -271,14 +276,24 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
                         if (response.isSuccessful) {
                             onResult(true, "ক্লাউড ডাটাবেস সিঙ্ক সম্পন্ন হয়েছে!")
                         } else {
-                            onResult(false, "ক্লাউড সিঙ্ক ব্যর্থ হয়েছে: ${response.code}")
+                            val errorMsg = when (response.code) {
+                                401, 403 -> "সিঙ্ক ব্যর্থ: ডাটাবেস Rules-এ রাইট পারমিশন নেই (HTTP ${response.code})"
+                                else -> "সিঙ্ক ব্যর্থ হয়েছে: HTTP ${response.code}"
+                            }
+                            onResult(false, errorMsg)
                         }
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
-                    onResult(false, "ত্রুটি ঘটেছে: ${e.localizedMessage}")
+                    val msg = e.localizedMessage ?: ""
+                    val friendlyMsg = if (msg.contains("Unable to resolve host") || msg.contains("UnknownHostException")) {
+                        "সিঙ্ক ব্যর্থ! ডাটাবেস URL সঠিক নয় অথবা ইন্টারনেট সংযোগ নেই।"
+                    } else {
+                        "সিঙ্ক ত্রুটি: $msg"
+                    }
+                    onResult(false, friendlyMsg)
                 }
             }
         }
@@ -309,20 +324,30 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
                         }
                     } else {
                         withContext(Dispatchers.Main) {
-                            onResult(false, "ক্লাউড ডাটাবেস থেকে রিস্টোর ব্যর্থ হয়েছে: ${response.code}", null)
+                            val errorMsg = when (response.code) {
+                                401, 403 -> "রিস্টোর ব্যর্থ: ডাটাবেস Rules-এ রিড পারমিশন নেই (HTTP ${response.code})"
+                                else -> "রিস্টোর ব্যর্থ হয়েছে: HTTP ${response.code}"
+                            }
+                            onResult(false, errorMsg, null)
                         }
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
-                    onResult(false, "ত্রুটি ঘটেছে: ${e.localizedMessage}", null)
+                    val msg = e.localizedMessage ?: ""
+                    val friendlyMsg = if (msg.contains("Unable to resolve host") || msg.contains("UnknownHostException")) {
+                        "রিস্টোর ব্যর্থ! ডাটাবেস URL সঠিক নয় অথবা ইন্টারনেট সংযোগ নেই।"
+                    } else {
+                        "রিস্টোর ত্রুটি: $msg"
+                    }
+                    onResult(false, friendlyMsg, null)
                 }
             }
         }
     }
 
-    fun performCloudLoginOrRegister(email: String, name: String, password: String, context: Context, onResult: (Boolean, String) -> Unit) {
+    fun performCloudLoginOrRegister(email: String, name: String, password: String, isRegister: Boolean, context: Context, onResult: (Boolean, String) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val client = OkHttpClient()
@@ -333,90 +358,122 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
                 client.newCall(checkRequest).execute().use { response ->
                     if (response.isSuccessful) {
                         val body = response.body?.string()
-                        if (body != null && body != "null" && body.isNotBlank()) {
-                            val profileObj = JSONObject(body)
-                            val storedPassword = profileObj.optString("password", "")
-                            if (storedPassword == password) {
+                        val hasAccount = body != null && body != "null" && body.isNotBlank()
+                        
+                        if (isRegister) {
+                            if (hasAccount) {
                                 withContext(Dispatchers.Main) {
-                                    setGoogleSignIn(email, name, true)
+                                    onResult(false, "এই ইমেইল/মোবাইল দিয়ে ইতিমধ্যে অ্যাকাউন্ট তৈরি করা আছে! অনুগ্রহ করে লগইন করুন।")
                                 }
-                                val backupUrl = firebaseDbUrl.value + "users/" + userId + "/backup.json"
-                                val backupRequest = Request.Builder().url(backupUrl).build()
-                                client.newCall(backupRequest).execute().use { backupResponse ->
-                                    if (backupResponse.isSuccessful) {
-                                        val backupBody = backupResponse.body?.string()
-                                        if (backupBody != null && backupBody != "null" && backupBody.isNotBlank()) {
+                            } else {
+                                // Register new account
+                                val newProfile = JSONObject()
+                                newProfile.put("email", email)
+                                newProfile.put("name", name)
+                                newProfile.put("password", password)
+                                
+                                val regRequest = Request.Builder()
+                                    .url(profileUrl)
+                                    .put(newProfile.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+                                    .build()
+                                client.newCall(regRequest).execute().use { regResponse ->
+                                    if (regResponse.isSuccessful) {
+                                        withContext(Dispatchers.Main) {
+                                            setGoogleSignIn(email, name, true)
+                                        }
+                                        val backupContent = exportBackup()
+                                        val backupUrl = firebaseDbUrl.value + "users/" + userId + "/backup.json"
+                                        val uploadReq = Request.Builder()
+                                            .url(backupUrl)
+                                            .put(backupContent.toRequestBody("application/json".toMediaTypeOrNull()))
+                                            .build()
+                                        client.newCall(uploadReq).execute().use { uploadResp ->
                                             withContext(Dispatchers.Main) {
-                                                val importSuccess = importBackup(backupBody, overwrite = true)
-                                                if (importSuccess) {
-                                                    onResult(true, "লগইন ও ব্যাকআপ রিস্টোর সফল হয়েছে!")
+                                                if (uploadResp.isSuccessful) {
+                                                    onResult(true, "নিবন্ধন এবং ডাটা ক্লাউডে সফলভাবে সিঙ্ক সম্পন্ন হয়েছে!")
                                                 } else {
-                                                    onResult(true, "লগইন সফল হয়েছে, কিন্তু ব্যাকআপ ডেটা প্রসেস করা যায়নি।")
+                                                    onResult(true, "নিবন্ধন সম্পন্ন হয়েছে, কিন্তু প্রাথমিক ডাটা ব্যাকআপ ব্যর্থ হয়েছে।")
                                                 }
-                                            }
-                                        } else {
-                                            withContext(Dispatchers.Main) {
-                                                onResult(true, "লগইন সফল হয়েছে! কোনো ক্লাউড ব্যাকআপ ডেটা পাওয়া যায়নি।")
                                             }
                                         }
                                     } else {
                                         withContext(Dispatchers.Main) {
-                                            onResult(true, "লগইন সফল হয়েছে, কিন্তু ব্যাকআপ ক্লাউড থেকে রিস্টোর করা যায়নি।")
+                                            val errorMsg = when (regResponse.code) {
+                                                401, 403 -> "অ্যাকাউন্ট তৈরি ব্যর্থ! ফায়ারবেস ডাটাবেসের Rules-এ রিড/রাইট পারমিশন নেই (HTTP ${regResponse.code})।"
+                                                else -> "অ্যাকাউন্ট নিবন্ধন ব্যর্থ হয়েছে: HTTP ${regResponse.code}"
+                                            }
+                                            onResult(false, errorMsg)
                                         }
                                     }
                                 }
-                            } else {
-                                withContext(Dispatchers.Main) {
-                                    onResult(false, "ভুল পাসওয়ার্ড! দয়া করে সঠিক পাসওয়ার্ড দিন।")
-                                }
                             }
                         } else {
-                            val newProfile = JSONObject()
-                            newProfile.put("email", email)
-                            newProfile.put("name", name)
-                            newProfile.put("password", password)
-                            
-                            val regRequest = Request.Builder()
-                                .url(profileUrl)
-                                .put(newProfile.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-                                .build()
-                            client.newCall(regRequest).execute().use { regResponse ->
-                                if (regResponse.isSuccessful) {
+                            // Login Mode
+                            if (hasAccount) {
+                                val profileObj = JSONObject(body)
+                                val storedPassword = profileObj.optString("password", "")
+                                if (storedPassword == password) {
+                                    val displayName = profileObj.optString("name", name)
                                     withContext(Dispatchers.Main) {
-                                        setGoogleSignIn(email, name, true)
+                                        setGoogleSignIn(email, displayName, true)
                                     }
-                                    val backupContent = exportBackup()
                                     val backupUrl = firebaseDbUrl.value + "users/" + userId + "/backup.json"
-                                    val uploadReq = Request.Builder()
-                                        .url(backupUrl)
-                                        .put(backupContent.toRequestBody("application/json".toMediaTypeOrNull()))
-                                        .build()
-                                    client.newCall(uploadReq).execute().use { uploadResp ->
-                                        withContext(Dispatchers.Main) {
-                                            if (uploadResp.isSuccessful) {
-                                                onResult(true, "নিবন্ধন এবং ডাটা ক্লাউডে সিঙ্ক সম্পন্ন হয়েছে!")
+                                    val backupRequest = Request.Builder().url(backupUrl).build()
+                                    client.newCall(backupRequest).execute().use { backupResponse ->
+                                        if (backupResponse.isSuccessful) {
+                                            val backupBody = backupResponse.body?.string()
+                                            if (backupBody != null && backupBody != "null" && backupBody.isNotBlank()) {
+                                                withContext(Dispatchers.Main) {
+                                                    val importSuccess = importBackup(backupBody, overwrite = true)
+                                                    if (importSuccess) {
+                                                        onResult(true, "লগইন সফল এবং ক্লাউড ব্যাকআপ রিস্টোর সম্পন্ন হয়েছে!")
+                                                    } else {
+                                                        onResult(true, "লগইন সফল হয়েছে, কিন্তু ব্যাকআপ ডেটা প্রসেস করা যায়নি।")
+                                                    }
+                                                }
                                             } else {
-                                                onResult(true, "নিবন্ধন সম্পন্ন হয়েছে, কিন্তু প্রাথমিক ডাটা ব্যাকআপ ব্যর্থ হয়েছে।")
+                                                withContext(Dispatchers.Main) {
+                                                    onResult(true, "লগইন সফল হয়েছে! ক্লাউডে কোনো পূর্ববর্তী ব্যাকআপ পাওয়া যায়নি।")
+                                                }
+                                            }
+                                        } else {
+                                            withContext(Dispatchers.Main) {
+                                                onResult(true, "লগইন সফল হয়েছে, কিন্তু ক্লাউড থেকে ব্যাকআপ রিস্টোর করা যায়নি।")
                                             }
                                         }
                                     }
                                 } else {
                                     withContext(Dispatchers.Main) {
-                                        onResult(false, "অ্যাকাউন্ট নিবন্ধন ব্যর্থ হয়েছে: ${regResponse.code}")
+                                        onResult(false, "ভুল পাসওয়ার্ড! দয়া করে সঠিক পাসওয়ার্ড দিন।")
                                     }
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    onResult(false, "এই ইমেইল/মোবাইল দিয়ে কোনো অ্যাকাউন্ট খুঁজে পাওয়া যায়নি! অনুগ্রহ করে আগে নিবন্ধন করুন।")
                                 }
                             }
                         }
                     } else {
                         withContext(Dispatchers.Main) {
-                            onResult(false, "সার্ভার সংযোগ ব্যর্থ হয়েছে: ${response.code}")
+                            val errorMsg = when (response.code) {
+                                401, 403 -> "সার্ভার সংযোগ রিফিউজড (কোড ${response.code})। ফায়ারবেস Rules চেক করুন।"
+                                404 -> "সার্ভার খুঁজে পাওয়া যায়নি (কোড 404)। ডাটাবেস URL চেক করুন।"
+                                else -> "সার্ভার সংযোগ ব্যর্থ হয়েছে: কোড ${response.code}"
+                            }
+                            onResult(false, errorMsg)
                         }
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
-                    onResult(false, "ত্রুটি ঘটেছে: ${e.localizedMessage}")
+                    val msg = e.localizedMessage ?: ""
+                    val friendlyMsg = if (msg.contains("Unable to resolve host") || msg.contains("UnknownHostException")) {
+                        "সার্ভার সংযোগ ব্যর্থ! ডাটাবেস URL-টি সঠিক নয় অথবা ইন্টারনেট কানেকশন নেই।"
+                    } else {
+                        "ত্রুটি ঘটেছে: $msg"
+                    }
+                    onResult(false, friendlyMsg)
                 }
             }
         }
@@ -9596,6 +9653,7 @@ fun ProfileTabScreen(
     var passwordInput by remember { mutableStateOf("") }
     var nameInput by remember { mutableStateOf("") }
     var isRegisterMode by remember { mutableStateOf(false) }
+    var isPasswordVisible by remember { mutableStateOf(false) }
     var dbUrlInput by remember { mutableStateOf(firebaseDbUrl) }
     var isDbUrlEditing by remember { mutableStateOf(false) }
 
@@ -9863,7 +9921,16 @@ fun ProfileTabScreen(
                             onValueChange = { passwordInput = it },
                             label = { Text("গোপন পাসওয়ার্ড", color = Color(0xFF94A3B8), fontSize = 12.sp) },
                             singleLine = true,
-                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            visualTransformation = if (isPasswordVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                                    Icon(
+                                        imageVector = if (isPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = "পাসওয়ার্ড প্রদর্শন পরিবর্তন করুন",
+                                        tint = Color(0xFF94A3B8)
+                                    )
+                                }
+                            },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White,
@@ -9887,6 +9954,7 @@ fun ProfileTabScreen(
                                     email = emailInput.trim(),
                                     name = finalName.trim(),
                                     password = passwordInput,
+                                    isRegister = isRegisterMode,
                                     context = context
                                 ) { success, msg ->
                                     isManualSyncing = false
