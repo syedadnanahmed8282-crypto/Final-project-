@@ -78,12 +78,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
-import com.google.android.gms.auth.GoogleAuthUtil
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.auth.api.signin.GoogleSignInAccount
-import com.google.android.gms.common.api.ApiException
-import com.google.android.gms.common.api.Scope
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import okhttp3.OkHttpClient
@@ -210,19 +204,253 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
     val profileAvatarIndex = MutableStateFlow(prefs.getInt("PROFILE_AVATAR_INDEX", 0))
     val profileCustomAvatarUri = MutableStateFlow(prefs.getString("PROFILE_CUSTOM_AVATAR_URI", "") ?: "")
 
+    val firebaseDbUrl = MutableStateFlow(prefs.getString("FIREBASE_DB_URL", "https://takahishab-default-rtdb.firebaseio.com/") ?: "https://takahishab-default-rtdb.firebaseio.com/")
+
+    init {
+        syncOnAppLaunch()
+    }
+
+    fun getSanitizedUserId(email: String): String {
+        return email.replace(".", "_").replace("@", "_")
+    }
+
+    fun updateFirebaseDbUrl(url: String) {
+        val normalizedUrl = if (url.endsWith("/")) url else "$url/"
+        firebaseDbUrl.value = normalizedUrl
+        prefs.edit().putString("FIREBASE_DB_URL", normalizedUrl).apply()
+    }
+
+    fun triggerCloudSync() {
+        val email = googleEmail.value
+        if (!isGoogleSignedIn.value || email.isBlank()) return
+        backupJob?.cancel()
+        backupJob = viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(2000)
+            val backupContent = exportBackup()
+            val userId = getSanitizedUserId(email)
+            val url = firebaseDbUrl.value + "users/" + userId + "/backup.json"
+            
+            try {
+                val client = OkHttpClient()
+                val request = Request.Builder()
+                    .url(url)
+                    .put(backupContent.toRequestBody("application/json".toMediaTypeOrNull()))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        android.util.Log.d("CloudSync", "Cloud sync successful")
+                    } else {
+                        android.util.Log.e("CloudSync", "Cloud sync failed: ${response.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun triggerCloudSyncForce(onResult: (Boolean, String) -> Unit) {
+        val email = googleEmail.value
+        if (!isGoogleSignedIn.value || email.isBlank()) {
+            onResult(false, "ক্লাউড সিঙ্ক সক্রিয় করতে আগে লগইন করুন।")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val backupContent = exportBackup()
+            val userId = getSanitizedUserId(email)
+            val url = firebaseDbUrl.value + "users/" + userId + "/backup.json"
+            
+            try {
+                val client = OkHttpClient()
+                val request = Request.Builder()
+                    .url(url)
+                    .put(backupContent.toRequestBody("application/json".toMediaTypeOrNull()))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    withContext(Dispatchers.Main) {
+                        if (response.isSuccessful) {
+                            onResult(true, "ক্লাউড ডাটাবেস সিঙ্ক সম্পন্ন হয়েছে!")
+                        } else {
+                            onResult(false, "ক্লাউড সিঙ্ক ব্যর্থ হয়েছে: ${response.code}")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onResult(false, "ত্রুটি ঘটেছে: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun triggerCloudSyncForceRestore(onResult: (Boolean, String, String?) -> Unit) {
+        val email = googleEmail.value
+        if (!isGoogleSignedIn.value || email.isBlank()) {
+            onResult(false, "ক্লাউড রিস্টোর করতে আগে লগইন করুন।", null)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val userId = getSanitizedUserId(email)
+            val url = firebaseDbUrl.value + "users/" + userId + "/backup.json"
+            
+            try {
+                val client = OkHttpClient()
+                val request = Request.Builder().url(url).build()
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string()
+                        withContext(Dispatchers.Main) {
+                            if (body != null && body != "null" && body.isNotBlank()) {
+                                onResult(true, "অনলাইন ক্লাউড ডাটাবেস সক্রিয় রয়েছে", body)
+                            } else {
+                                onResult(false, "কোনো ব্যাকআপ ক্লাউডে পাওয়া যায়নি!", null)
+                            }
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "ক্লাউড ডাটাবেস থেকে রিস্টোর ব্যর্থ হয়েছে: ${response.code}", null)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onResult(false, "ত্রুটি ঘটেছে: ${e.localizedMessage}", null)
+                }
+            }
+        }
+    }
+
+    fun performCloudLoginOrRegister(email: String, name: String, password: String, context: Context, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val client = OkHttpClient()
+                val userId = getSanitizedUserId(email)
+                val profileUrl = firebaseDbUrl.value + "users/" + userId + "/profile.json"
+                
+                val checkRequest = Request.Builder().url(profileUrl).build()
+                client.newCall(checkRequest).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string()
+                        if (body != null && body != "null" && body.isNotBlank()) {
+                            val profileObj = JSONObject(body)
+                            val storedPassword = profileObj.optString("password", "")
+                            if (storedPassword == password) {
+                                withContext(Dispatchers.Main) {
+                                    setGoogleSignIn(email, name, true)
+                                }
+                                val backupUrl = firebaseDbUrl.value + "users/" + userId + "/backup.json"
+                                val backupRequest = Request.Builder().url(backupUrl).build()
+                                client.newCall(backupRequest).execute().use { backupResponse ->
+                                    if (backupResponse.isSuccessful) {
+                                        val backupBody = backupResponse.body?.string()
+                                        if (backupBody != null && backupBody != "null" && backupBody.isNotBlank()) {
+                                            withContext(Dispatchers.Main) {
+                                                val importSuccess = importBackup(backupBody, overwrite = true)
+                                                if (importSuccess) {
+                                                    onResult(true, "লগইন ও ব্যাকআপ রিস্টোর সফল হয়েছে!")
+                                                } else {
+                                                    onResult(true, "লগইন সফল হয়েছে, কিন্তু ব্যাকআপ ডেটা প্রসেস করা যায়নি।")
+                                                }
+                                            }
+                                        } else {
+                                            withContext(Dispatchers.Main) {
+                                                onResult(true, "লগইন সফল হয়েছে! কোনো ক্লাউড ব্যাকআপ ডেটা পাওয়া যায়নি।")
+                                            }
+                                        }
+                                    } else {
+                                        withContext(Dispatchers.Main) {
+                                            onResult(true, "লগইন সফল হয়েছে, কিন্তু ব্যাকআপ ক্লাউড থেকে রিস্টোর করা যায়নি।")
+                                        }
+                                    }
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    onResult(false, "ভুল পাসওয়ার্ড! দয়া করে সঠিক পাসওয়ার্ড দিন।")
+                                }
+                            }
+                        } else {
+                            val newProfile = JSONObject()
+                            newProfile.put("email", email)
+                            newProfile.put("name", name)
+                            newProfile.put("password", password)
+                            
+                            val regRequest = Request.Builder()
+                                .url(profileUrl)
+                                .put(newProfile.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+                                .build()
+                            client.newCall(regRequest).execute().use { regResponse ->
+                                if (regResponse.isSuccessful) {
+                                    withContext(Dispatchers.Main) {
+                                        setGoogleSignIn(email, name, true)
+                                    }
+                                    val backupContent = exportBackup()
+                                    val backupUrl = firebaseDbUrl.value + "users/" + userId + "/backup.json"
+                                    val uploadReq = Request.Builder()
+                                        .url(backupUrl)
+                                        .put(backupContent.toRequestBody("application/json".toMediaTypeOrNull()))
+                                        .build()
+                                    client.newCall(uploadReq).execute().use { uploadResp ->
+                                        withContext(Dispatchers.Main) {
+                                            if (uploadResp.isSuccessful) {
+                                                onResult(true, "নিবন্ধন এবং ডাটা ক্লাউডে সিঙ্ক সম্পন্ন হয়েছে!")
+                                            } else {
+                                                onResult(true, "নিবন্ধন সম্পন্ন হয়েছে, কিন্তু প্রাথমিক ডাটা ব্যাকআপ ব্যর্থ হয়েছে।")
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    withContext(Dispatchers.Main) {
+                                        onResult(false, "অ্যাকাউন্ট নিবন্ধন ব্যর্থ হয়েছে: ${regResponse.code}")
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "সার্ভার সংযোগ ব্যর্থ হয়েছে: ${response.code}")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onResult(false, "ত্রুটি ঘটেছে: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun syncOnAppLaunch() {
+        val email = googleEmail.value
+        if (!isGoogleSignedIn.value || email.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val client = OkHttpClient()
+                val userId = getSanitizedUserId(email)
+                val backupUrl = firebaseDbUrl.value + "users/" + userId + "/backup.json"
+                val request = Request.Builder().url(backupUrl).build()
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string()
+                        if (body != null && body != "null" && body.isNotBlank()) {
+                            withContext(Dispatchers.Main) {
+                                importBackup(body, overwrite = true)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     private var backupJob: kotlinx.coroutines.Job? = null
 
     fun triggerAutoBackup() {
-        if (!isGoogleSignedIn.value) return
-        backupJob?.cancel()
-        backupJob = viewModelScope.launch(Dispatchers.IO) {
-            kotlinx.coroutines.delay(3000)
-            val account = GoogleSignIn.getLastSignedInAccount(context)
-            if (account != null) {
-                val backupContent = exportBackup()
-                uploadToGoogleDrive(context, account, backupContent) { _, _ -> }
-            }
-        }
+        triggerCloudSync()
     }
 
     fun updateProfileName(name: String) {
@@ -256,7 +484,7 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
             if (profileName.value == "আহমেদ রাসেল" && name.isNotBlank()) {
                 updateProfileName(name)
             }
-            triggerAutoBackup()
+            triggerCloudSync()
         }
     }
 
@@ -1078,202 +1306,7 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
         return result
     }
 
-    fun uploadToGoogleDrive(
-        context: Context,
-        account: GoogleSignInAccount,
-        backupContent: String,
-        onResult: (Boolean, String) -> Unit
-    ) {
-        val client = OkHttpClient()
-        val scopeName = "oauth2:https://www.googleapis.com/auth/drive.appdata"
-        
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val accessToken = GoogleAuthUtil.getToken(context, account.account!!, scopeName)
-                if (accessToken.isNullOrBlank()) {
-                    withContext(Dispatchers.Main) {
-                        onResult(false, "গুগল ড্রাইভ টোকেন পাওয়া যায়নি!")
-                    }
-                    return@launch
-                }
-                
-                // 1. Search for existing file
-                val searchRequest = Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='backup_takahishab.json'")
-                    .header("Authorization", "Bearer $accessToken")
-                    .build()
-                    
-                client.newCall(searchRequest).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        withContext(Dispatchers.Main) {
-                            onResult(false, "ড্রাইভ ফাইল সার্চ ব্যর্থ: ${response.code}")
-                        }
-                        return@launch
-                    }
-                    
-                    val bodyStr = response.body?.string() ?: ""
-                    if (bodyStr.trim().startsWith("<") || bodyStr.contains("html", ignoreCase = true) || bodyStr.contains("doctype", ignoreCase = true)) {
-                        withContext(Dispatchers.Main) {
-                            onResult(false, "ত্রুটি: সঠিক ব্যাকআপ ফাইলের বদলে একটি ওয়েব পেজ (HTML) পাওয়া গেছে। আপনার জিমেইল সাইন-ইন ঠিক করতে হবে।")
-                        }
-                        return@launch
-                    }
-                    val searchRoot = JSONObject(bodyStr)
-                    val filesArray = searchRoot.getJSONArray("files")
-                    var fileId: String? = null
-                    if (filesArray.length() > 0) {
-                        fileId = filesArray.getJSONObject(0).getString("id")
-                    }
-                    
-                    if (fileId != null) {
-                        // Update existing file
-                        val mediaRequest = Request.Builder()
-                            .url("https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=media")
-                            .header("Authorization", "Bearer $accessToken")
-                            .patch(backupContent.toRequestBody("application/json".toMediaTypeOrNull()))
-                            .build()
-                            
-                        client.newCall(mediaRequest).execute().use { updateResponse ->
-                            withContext(Dispatchers.Main) {
-                                if (updateResponse.isSuccessful) {
-                                    onResult(true, "গুগল ড্রাইভে ডাটা ব্যাকআপ সফল হয়েছে!")
-                                } else {
-                                    onResult(false, "ড্রাইভ ফাইল আপডেট ব্যর্থ: ${updateResponse.code}")
-                                }
-                            }
-                        }
-                    } else {
-                        // Create new file metadata
-                        val metadataJson = JSONObject()
-                        metadataJson.put("name", "backup_takahishab.json")
-                        val parents = JSONArray()
-                        parents.put("appDataFolder")
-                        metadataJson.put("parents", parents)
-                        
-                        val createMetaRequest = Request.Builder()
-                            .url("https://www.googleapis.com/drive/v3/files")
-                            .header("Authorization", "Bearer $accessToken")
-                            .post(metadataJson.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-                            .build()
-                            
-                        client.newCall(createMetaRequest).execute().use { metaResponse ->
-                            if (!metaResponse.isSuccessful) {
-                                withContext(Dispatchers.Main) {
-                                    onResult(false, "ড্রাইভ মেটাডাটা তৈরি ব্যর্থ: ${metaResponse.code}")
-                                }
-                                return@launch
-                            }
-                            
-                            val metaBody = metaResponse.body?.string() ?: ""
-                            if (metaBody.trim().startsWith("<") || metaBody.contains("html", ignoreCase = true) || metaBody.contains("doctype", ignoreCase = true)) {
-                                withContext(Dispatchers.Main) {
-                                    onResult(false, "ত্রুটি: সঠিক রেসপন্সের বদলে একটি ওয়েব পেজ (HTML) পাওয়া গেছে। আপনার জিমেইল সাইন-ইন ঠিক করতে হবে।")
-                                }
-                                return@launch
-                            }
-                            val newFileId = JSONObject(metaBody).getString("id")
-                            
-                            // Upload content
-                            val mediaRequest = Request.Builder()
-                                .url("https://www.googleapis.com/upload/drive/v3/files/$newFileId?uploadType=media")
-                                .header("Authorization", "Bearer $accessToken")
-                                .patch(backupContent.toRequestBody("application/json".toMediaTypeOrNull()))
-                                .build()
-                                
-                            client.newCall(mediaRequest).execute().use { createResponse ->
-                                withContext(Dispatchers.Main) {
-                                    if (createResponse.isSuccessful) {
-                                        onResult(true, "গুগল ড্রাইভে ব্যাকআপ সফলভাবে সংরক্ষণ করা হয়েছে!")
-                                    } else {
-                                        onResult(false, "ড্রাইভ আপলোড ব্যর্থ: ${createResponse.code}")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    onResult(false, "ত্রুটি: ${e.localizedMessage}")
-                }
-            }
-        }
-    }
 
-    fun restoreFromGoogleDrive(
-        context: Context,
-        account: GoogleSignInAccount,
-        onResult: (Boolean, String, String?) -> Unit
-    ) {
-        val client = OkHttpClient()
-        val scopeName = "oauth2:https://www.googleapis.com/auth/drive.appdata"
-        
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val accessToken = GoogleAuthUtil.getToken(context, account.account!!, scopeName)
-                if (accessToken.isNullOrBlank()) {
-                    withContext(Dispatchers.Main) {
-                        onResult(false, "গুগল ড্রাইভ টোকেন পাওয়া যায়নি!", null)
-                    }
-                    return@launch
-                }
-                
-                // 1. Search for the file
-                val searchRequest = Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='backup_takahishab.json'")
-                    .header("Authorization", "Bearer $accessToken")
-                    .build()
-                    
-                client.newCall(searchRequest).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        withContext(Dispatchers.Main) {
-                            onResult(false, "ড্রাইভ সার্চ ব্যর্থ: ${response.code}", null)
-                        }
-                        return@launch
-                    }
-                    
-                    val bodyStr = response.body?.string() ?: ""
-                    val searchRoot = JSONObject(bodyStr)
-                    val filesArray = searchRoot.getJSONArray("files")
-                    if (filesArray.length() == 0) {
-                        withContext(Dispatchers.Main) {
-                            onResult(false, "গুগল ড্রাইভে কোনো ব্যাকআপ ফাইল পাওয়া যায়নি!", null)
-                        }
-                        return@launch
-                    }
-                    
-                    val fileId = filesArray.getJSONObject(0).getString("id")
-                    
-                    // 2. Download the file
-                    val downloadRequest = Request.Builder()
-                        .url("https://www.googleapis.com/drive/v3/files/$fileId?alt=media")
-                        .header("Authorization", "Bearer $accessToken")
-                        .build()
-                        
-                    client.newCall(downloadRequest).execute().use { downloadResponse ->
-                        withContext(Dispatchers.Main) {
-                            if (downloadResponse.isSuccessful) {
-                                val backupContent = downloadResponse.body?.string() ?: ""
-                                if (backupContent.trim().startsWith("<") || backupContent.contains("html", ignoreCase = true) || backupContent.contains("doctype", ignoreCase = true)) {
-                                    onResult(false, "ত্রুটি: গুগল ড্রাইভ থেকে সঠিক ব্যাকআপ ফাইলের বদলে একটি ওয়েব পেজ (HTML) পাওয়া গেছে। সাধারণত আপনার জিমেইল সাইন-ইন বা জিমেইল কানেকশন ঠিকমতো কাজ না করলে এমনটি ঘটে।", null)
-                                } else {
-                                    onResult(true, "গুগল ড্রাইভ থেকে ব্যাকআপ সফলভাবে ডাউনলোড করা হয়েছে!", backupContent)
-                                }
-                            } else {
-                                onResult(false, "ডাউনলোড ব্যর্থ: ${downloadResponse.code}", null)
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    onResult(false, "ত্রুটি: ${e.localizedMessage}", null)
-                }
-            }
-        }
-    }
 }
 
 class MainViewModelFactory(
@@ -8065,28 +8098,13 @@ fun SettingsDialog(
         }
     }
 
-    var driveStatusText by remember { mutableStateOf("গুগল ড্রাইভে ডাটা ব্যাকআপ রাখতে লগইন করুন") }
-    var isDriveSyncing by remember { mutableStateOf(false) }
-
-    val googleSignInLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        try {
-            val account = task.getResult(ApiException::class.java)
-            if (account != null) {
-                driveStatusText = "গুগল ড্রাইভ কানেক্টেড: ${account.email}"
-                Toast.makeText(context, "গুগল সাইন-ইন সফল হয়েছে!", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: ApiException) {
-            val msg = when (e.statusCode) {
-                10 -> "ডেভেলপার কী বা SHA-1 ফিঙ্গারপ্রিন্ট গুগল ক্লাউড কনসোলে রেজিস্টার করা নেই (Error 10)।"
-                else -> "গুগল সাইন-ইন ব্যর্থ হয়েছে: ${e.message}"
-            }
-            driveStatusText = "লগইন ব্যর্থতা: ${e.statusCode}"
-            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-        }
+    var driveStatusText by remember {
+        mutableStateOf(
+            if (viewModel.isGoogleSignedIn.value) "অনলাইন ক্লাউড ডাটাবেস সক্রিয় রয়েছে (${viewModel.googleEmail.value})"
+            else "ক্লাউড ডাটাবেসে ডাটা ব্যাকআপ রাখতে লগইন করুন"
+        )
     }
+    var isDriveSyncing by remember { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -8338,13 +8356,13 @@ fun SettingsDialog(
                     Spacer(modifier = Modifier.height(4.dp))
                     Divider(color = Color.White.copy(alpha = 0.08f))
 
-                    // ৩.২ গুগল ড্রাইভ ক্লাউড ব্যাকআপ (অনলাইন)
+                    // ৩.২ অনলাইন ক্লাউড ডাটাবেস সিঙ্ক
                     Column(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "ক্লাউড সিঙ্ক (গুগল ড্রাইভ)",
+                            text = "অনলাইন ক্লাউড ডাটাবেস সিঙ্ক",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFFFBBF24)
@@ -8356,25 +8374,16 @@ fun SettingsDialog(
                         ) {
                             Button(
                                 onClick = {
-                                    isDriveSyncing = true
-                                    driveStatusText = "গুগল ড্রাইভের সাথে সিঙ্ক করা হচ্ছে..."
-                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                                        .requestEmail()
-                                        .requestProfile()
-                                        .requestScopes(Scope(Scopes.DRIVE_APP_DATA))
-                                        .build()
-                                    val googleSignInClient = GoogleSignIn.getClient(context, gso)
-                                    val account = GoogleSignIn.getLastSignedInAccount(context)
-                                    if (account != null) {
-                                        val backupContent = viewModel.exportBackup()
-                                        viewModel.uploadToGoogleDrive(context, account, backupContent) { success, msg ->
+                                    if (viewModel.isGoogleSignedIn.value) {
+                                        isDriveSyncing = true
+                                        driveStatusText = "অনলাইন ক্লাউড ডাটাবেসের সাথে সিঙ্ক করা হচ্ছে..."
+                                        viewModel.triggerCloudSyncForce { success, msg ->
                                             isDriveSyncing = false
-                                            driveStatusText = msg
+                                            driveStatusText = if (success) "অনলাইন ক্লাউড ডাটাবেস সক্রিয় রয়েছে (${viewModel.googleEmail.value})" else msg
                                             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                                         }
                                     } else {
-                                        // Start sign-in flow
-                                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                                        Toast.makeText(context, "ক্লাউড সিঙ্ক করতে দয়া করে প্রোফাইল ট্যাব থেকে লগইন সম্পন্ন করুন।", Toast.LENGTH_LONG).show()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(
@@ -8398,7 +8407,7 @@ fun SettingsDialog(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        text = "ড্রাইভ ব্যাকআপ",
+                                        text = "অনলাইন ব্যাকআপ",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -8407,23 +8416,16 @@ fun SettingsDialog(
 
                             Button(
                                 onClick = {
-                                    isDriveSyncing = true
-                                    driveStatusText = "গুগল ড্রাইভ থেকে ব্যাকআপ খোঁজা হচ্ছে..."
-                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                                        .requestEmail()
-                                        .requestProfile()
-                                        .requestScopes(Scope(Scopes.DRIVE_APP_DATA))
-                                        .build()
-                                    val googleSignInClient = GoogleSignIn.getClient(context, gso)
-                                    val account = GoogleSignIn.getLastSignedInAccount(context)
-                                    if (account != null) {
-                                        viewModel.restoreFromGoogleDrive(context, account) { success, msg, content ->
+                                    if (viewModel.isGoogleSignedIn.value) {
+                                        isDriveSyncing = true
+                                        driveStatusText = "ক্লাউড থেকে ব্যাকআপ খোঁজা হচ্ছে..."
+                                        viewModel.triggerCloudSyncForceRestore { success, msg, content ->
                                             isDriveSyncing = false
-                                            driveStatusText = msg
+                                            driveStatusText = if (success) "অনলাইন ক্লাউড ডাটাবেস সক্রিয় রয়েছে (${viewModel.googleEmail.value})" else msg
                                             if (success && content != null) {
                                                 val importSuccess = viewModel.importBackup(content, overwrite = true)
                                                 if (importSuccess) {
-                                                    Toast.makeText(context, "গুগল ড্রাইভ থেকে রিস্টোর সফল হয়েছে!", Toast.LENGTH_LONG).show()
+                                                    Toast.makeText(context, "ক্লাউড ডাটাবেস থেকে রিস্টোর সফল হয়েছে!", Toast.LENGTH_LONG).show()
                                                 } else {
                                                     Toast.makeText(context, "রিস্টোর করা ডাটা প্রসেস করতে ব্যর্থতা!", Toast.LENGTH_LONG).show()
                                                 }
@@ -8432,7 +8434,7 @@ fun SettingsDialog(
                                             }
                                         }
                                     } else {
-                                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                                        Toast.makeText(context, "ক্লাউড রিস্টোর করতে দয়া করে প্রোফাইল ট্যাব থেকে লগইন সম্পন্ন করুন।", Toast.LENGTH_LONG).show()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(
@@ -8456,7 +8458,7 @@ fun SettingsDialog(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        text = "ড্রাইভ রিস্টোর",
+                                        text = "ক্লাউড রিস্টোর",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -9575,21 +9577,27 @@ fun ProfileTabScreen(
     val totalExpense = entries.filter { !it.isIncome }.sumOf { it.expense }
     val balance = totalIncome - totalExpense
 
-    // Profile and Google states
+    // Profile and Cloud states
     val googleEmail by viewModel.googleEmail.collectAsStateWithLifecycle()
     val googleName by viewModel.googleName.collectAsStateWithLifecycle()
     val isGoogleSignedIn by viewModel.isGoogleSignedIn.collectAsStateWithLifecycle()
     val profileName by viewModel.profileName.collectAsStateWithLifecycle()
     val currentAvatarIdx by viewModel.profileAvatarIndex.collectAsStateWithLifecycle()
     val profileCustomAvatarUri by viewModel.profileCustomAvatarUri.collectAsStateWithLifecycle()
+    val firebaseDbUrl by viewModel.firebaseDbUrl.collectAsStateWithLifecycle()
 
     var showAvatarDialog by remember { mutableStateOf(false) }
     var showNameEditDialog by remember { mutableStateOf(false) }
     var tempNameInput by remember { mutableStateOf("") }
     var isManualSyncing by remember { mutableStateOf(false) }
-    var showAlternativeLoginDialog by remember { mutableStateOf(false) }
-    var alternativeEmailInput by remember { mutableStateOf("") }
-    var alternativeNameInput by remember { mutableStateOf("") }
+
+    // Cloud login / register state
+    var emailInput by remember { mutableStateOf("") }
+    var passwordInput by remember { mutableStateOf("") }
+    var nameInput by remember { mutableStateOf("") }
+    var isRegisterMode by remember { mutableStateOf(false) }
+    var dbUrlInput by remember { mutableStateOf(firebaseDbUrl) }
+    var isDbUrlEditing by remember { mutableStateOf(false) }
 
     val avatarConfig = listOf(
         Pair(Color(0xFF3B82F6), Icons.Default.Person),       // Cyan/Blue
@@ -9616,45 +9624,6 @@ fun ProfileTabScreen(
             }
             viewModel.updateProfileCustomAvatarUri(uri.toString())
             showAvatarDialog = false
-        }
-    }
-
-    val googleSignInLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        try {
-            val account = task.getResult(ApiException::class.java)
-            if (account != null) {
-                val email = account.email ?: ""
-                val name = account.displayName ?: ""
-                viewModel.setGoogleSignIn(email, name, true)
-                Toast.makeText(context, "গুগল সাইন-ইন সফল হয়েছে!", Toast.LENGTH_SHORT).show()
-
-                // Automatic restore of previous backup if it exists
-                viewModel.restoreFromGoogleDrive(context, account) { success, msg, content ->
-                    if (success && !content.isNullOrBlank()) {
-                        val imported = viewModel.importBackup(content, overwrite = true)
-                        if (imported) {
-                            Toast.makeText(context, "পূর্বের ব্যাকআপ ডাটা সফলভাবে পুনরুদ্ধার করা হয়েছে!", Toast.LENGTH_LONG).show()
-                        }
-                    } else {
-                        println("ProfileRestore: No previous drive backup found: $msg")
-                    }
-                }
-            }
-        } catch (e: ApiException) {
-            e.printStackTrace()
-            val statusCode = e.statusCode
-            val errorDetail = when (statusCode) {
-                10 -> "ত্রুটি ১০ (DEVELOPER_ERROR): আপনার গুগল ক্লাউড কনসোলে এই অ্যাপের সঠিক 'প্যাকেজ নাম' (${context.packageName}) এবং সঠিক 'SHA-1' রেজিস্টার করা নেই।"
-                12500 -> "ত্রুটি ১২৫০০ (SIGN_IN_FAILED): গুগল সাইন-ইন ব্যর্থ। আপনার গুগল এপিআই কনসোল কনফিগারেশন চেক করুন।"
-                7 -> "ত্রুটি ৭ (NETWORK_ERROR): ইন্টারনেট সংযোগে সমস্যা হচ্ছে।"
-                16 -> "ত্রুটি ১৬ (CANCELED): সাইন-ইন বাতিল করা হয়েছে।"
-                else -> "গুগল সাইন-ইন ব্যর্থ হয়েছে। ত্রুটি কোড: $statusCode"
-            }
-            showAlternativeLoginDialog = true
-            Toast.makeText(context, errorDetail, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -9689,7 +9658,7 @@ fun ProfileTabScreen(
             )
         }
 
-        // Profile Card
+        // Profile Card / Authentication Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
@@ -9761,7 +9730,7 @@ fun ProfileTabScreen(
                         }
                         
                         Text(
-                            text = if (isGoogleSignedIn && googleEmail.isNotBlank()) googleEmail else "গুগল দিয়ে লগইন করা নেই",
+                            text = if (isGoogleSignedIn && googleEmail.isNotBlank()) googleEmail else "অনলাইন ব্যাকআপ সক্রিয় নেই",
                             fontSize = 12.sp,
                             color = Color(0xFF94A3B8)
                         )
@@ -9770,82 +9739,188 @@ fun ProfileTabScreen(
 
                 Divider(color = Color.White.copy(alpha = 0.05f))
 
+                // Firebase/Supabase Server Configuration Row (Collapsible/Editable)
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "অনলাইন ডাটাবেস এপিআই URL",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFBBF24)
+                        )
+                        Text(
+                            text = if (isDbUrlEditing) "সংরক্ষণ করুন" else "পরিবর্তন",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF3B82F6),
+                            modifier = Modifier
+                                .clickable {
+                                    if (isDbUrlEditing) {
+                                        if (dbUrlInput.isNotBlank()) {
+                                            viewModel.updateFirebaseDbUrl(dbUrlInput)
+                                            Toast.makeText(context, "ডাটাবেস ইউআরএল আপডেট হয়েছে!", Toast.LENGTH_SHORT).show()
+                                        }
+                                        isDbUrlEditing = false
+                                    } else {
+                                        dbUrlInput = firebaseDbUrl
+                                        isDbUrlEditing = true
+                                    }
+                                }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+
+                    if (isDbUrlEditing) {
+                        OutlinedTextField(
+                            value = dbUrlInput,
+                            onValueChange = { dbUrlInput = it },
+                            placeholder = { Text("https://example-default-rtdb.firebaseio.com/", color = Color(0xFF64748B)) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                                focusedContainerColor = Color(0xFF131C33),
+                                unfocusedContainerColor = Color(0xFF131C33)
+                            ),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text(
+                            text = firebaseDbUrl,
+                            fontSize = 11.sp,
+                            color = Color(0xFF94A3B8),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+
+                Divider(color = Color.White.copy(alpha = 0.05f))
+
                 // Authentication Status and Actions
                 if (!isGoogleSignedIn) {
-                    // Show Sign In Button with alternative fallback
+                    // Show Secure Cloud Authentication Fields
                     Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
+                        Text(
+                            text = if (isRegisterMode) "নতুন অ্যাকাউন্ট তৈরি করুন" else "ক্লাউড অ্যাকাউন্টে লগইন করুন",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+
+                        OutlinedTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it },
+                            label = { Text("ইমেইল বা মোবাইল নম্বর", color = Color(0xFF94A3B8), fontSize = 12.sp) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                                focusedContainerColor = Color(0xFF131C33),
+                                unfocusedContainerColor = Color(0xFF131C33)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (isRegisterMode) {
+                            OutlinedTextField(
+                                value = nameInput,
+                                onValueChange = { nameInput = it },
+                                label = { Text("আপনার সম্পূর্ণ নাম", color = Color(0xFF94A3B8), fontSize = 12.sp) },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedBorderColor = Color(0xFF3B82F6),
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                                    focusedContainerColor = Color(0xFF131C33),
+                                    unfocusedContainerColor = Color(0xFF131C33)
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        OutlinedTextField(
+                            value = passwordInput,
+                            onValueChange = { passwordInput = it },
+                            label = { Text("গোপন পাসওয়ার্ড", color = Color(0xFF94A3B8), fontSize = 12.sp) },
+                            singleLine = true,
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFF3B82F6),
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                                focusedContainerColor = Color(0xFF131C33),
+                                unfocusedContainerColor = Color(0xFF131C33)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         Button(
                             onClick = {
-                                val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                                    .requestEmail()
-                                    .requestProfile()
-                                    .requestScopes(Scope(Scopes.DRIVE_APP_DATA))
-                                    .build()
-                                val googleSignInClient = GoogleSignIn.getClient(context, gso)
-                                googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                                if (emailInput.isBlank() || passwordInput.isBlank() || (isRegisterMode && nameInput.isBlank())) {
+                                    Toast.makeText(context, "দয়া করে সবগুলো ঘর পূরণ করুন!", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                val finalName = if (isRegisterMode) nameInput else profileName
+                                isManualSyncing = true
+                                viewModel.performCloudLoginOrRegister(
+                                    email = emailInput.trim(),
+                                    name = finalName.trim(),
+                                    password = passwordInput,
+                                    context = context
+                                ) { success, msg ->
+                                    isManualSyncing = false
+                                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Person,
-                                    contentDescription = null,
-                                    tint = Color(0xFFFBBF24)
-                                )
-                                Text(
-                                    text = "জিমেইল দিয়ে লগইন করুন",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    color = Color.White
-                                )
-                            }
+                            Text(
+                                text = if (isManualSyncing) "প্রসেস করা হচ্ছে..." else if (isRegisterMode) "নিবন্ধন সম্পন্ন করুন" else "লগইন করুন",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color.White
+                            )
                         }
-                        
+
                         Text(
-                            text = "সরাসরি বিকল্প পদ্ধতিতে লগইন করতে এখানে ক্লিক করুন",
+                            text = if (isRegisterMode) "ইতিমধ্যে অ্যাকাউন্ট আছে? লগইন করুন" else "নতুন অ্যাকাউন্ট প্রয়োজন? নিবন্ধন করুন",
                             fontSize = 11.sp,
                             color = Color(0xFF3B82F6),
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier
-                                .clickable { showAlternativeLoginDialog = true }
-                                .padding(top = 4.dp)
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "জিমেইল সেশন রিসেট/লগআউট করুন",
-                            fontSize = 11.sp,
-                            color = Color(0xFFEF4444),
-                            fontWeight = FontWeight.Normal,
-                            modifier = Modifier
-                                .clickable {
-                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                    val client = GoogleSignIn.getClient(context, gso)
-                                    client.signOut().addOnCompleteListener {
-                                        client.revokeAccess().addOnCompleteListener {
-                                            viewModel.setGoogleSignIn("", "", false)
-                                            Toast.makeText(context, "জিমেইল সেশন সম্পূর্ণ রিসেট করা হয়েছে!", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
+                                .clickable { isRegisterMode = !isRegisterMode }
                                 .padding(vertical = 4.dp)
+                                .align(Alignment.CenterHorizontally)
                         )
                     }
                 } else {
-                    // Logged in: Show Auto-backup status and actions
+                    // Logged in: Show Auto-sync status, Cloud sync controls, and Logout
                     Column(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // Success auto-backup badge
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = Color(0xFF10B981).copy(alpha = 0.1f),
@@ -9853,7 +9928,7 @@ fun ProfileTabScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = "✓ গুগল ড্রাইভ অটো-ব্যাকআপ সক্রিয় রয়েছে",
+                                text = "✓ অনলাইন ক্লাউড রিয়েলটাইম সিঙ্ক সক্রিয় রয়েছে",
                                 fontSize = 11.sp,
                                 color = Color(0xFF34D399),
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -9861,24 +9936,17 @@ fun ProfileTabScreen(
                             )
                         }
 
-                        // Sync & Logout buttons row
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Manual Upload/Backup Button
+                            // Manual Database Sync Button
                             Button(
                                 onClick = {
-                                    val account = GoogleSignIn.getLastSignedInAccount(context)
-                                    if (account != null) {
-                                        isManualSyncing = true
-                                        val backupContent = viewModel.exportBackup()
-                                        viewModel.uploadToGoogleDrive(context, account, backupContent) { success, msg ->
-                                            isManualSyncing = false
-                                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                                        }
-                                    } else {
-                                        Toast.makeText(context, "সরাসরি গুগল ড্রাইভ সংযোগ পাওয়া যায়নি। বিকল্প লগইন ব্যবহার করলে ক্লাউড ব্যাকআপ সম্ভব নয়। দয়া করে সরাসরি জিমেইল দিয়ে লগইন করুন অথবা নিচে দেওয়া SHA-1 আপনার গুগল ক্লাউড কনসোলে যোগ করুন।", Toast.LENGTH_LONG).show()
+                                    isManualSyncing = true
+                                    viewModel.triggerCloudSyncForce { success, msg ->
+                                        isManualSyncing = false
+                                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
@@ -9897,7 +9965,7 @@ fun ProfileTabScreen(
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = if (isManualSyncing) "সিঙ্ক হচ্ছে..." else "ম্যানুয়াল ব্যাকআপ",
+                                        text = if (isManualSyncing) "সিঙ্ক হচ্ছে..." else "ডাটা সিঙ্ক করুন",
                                         fontSize = 11.sp,
                                         color = Color.White,
                                         fontWeight = FontWeight.Bold
@@ -9908,14 +9976,8 @@ fun ProfileTabScreen(
                             // Logout Button
                             Button(
                                 onClick = {
-                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                    val client = GoogleSignIn.getClient(context, gso)
-                                    client.signOut().addOnCompleteListener {
-                                        client.revokeAccess().addOnCompleteListener {
-                                            viewModel.setGoogleSignIn("", "", false)
-                                            Toast.makeText(context, "জিমেইল সম্পূর্ণ লগআউট করা হয়েছে!", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
+                                    viewModel.setGoogleSignIn("", "", false)
+                                    Toast.makeText(context, "ক্লাউড থেকে লগআউট সম্পন্ন হয়েছে!", Toast.LENGTH_SHORT).show()
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D).copy(alpha = 0.3f)),
                                 shape = RoundedCornerShape(10.dp),
@@ -9942,145 +10004,6 @@ fun ProfileTabScreen(
                             }
                         }
                     }
-                }
-            }
-        }
-
-        // Connection Guide & SHA-1 Card for GitHub builds or Google Sign-In issues
-        var showGuideByExpansion by remember { mutableStateOf(false) }
-        val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
-        val appPackageName = context.packageName
-        val appSha1 = remember { getAppSignaturesSHA1(context) }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.2f))
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showGuideByExpansion = !showGuideByExpansion },
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = null,
-                            tint = Color(0xFF3B82F6),
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = "গুগল ড্রাইভ ব্যাকআপ সংযোগ নির্দেশিকা (SHA-1)",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                    Icon(
-                        imageVector = if (showGuideByExpansion) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Expand",
-                        tint = Color(0xFF94A3B8),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                if (showGuideByExpansion) {
-                    Text(
-                        text = "গিটহাব বা অন্য কোনো সার্ভিস থেকে অ্যাপটি বিল্ড করলে জিমেইল লগইন বা গুগল ড্রাইভ ব্যাকআপ কাজ না করার মূল কারণ হলো গুগল ডেভেলপার কনসোলে আপনার অ্যাপের স্বাক্ষর (SHA-1 fingerprint) যুক্ত না থাকা। নিচের তথ্যগুলো ব্যবহার করে এটি ঠিক করতে পারেন:",
-                        fontSize = 11.sp,
-                        color = Color(0xFF94A3B8),
-                        lineHeight = 16.sp
-                    )
-
-                    Divider(color = Color.White.copy(alpha = 0.05f))
-
-                    // Package Name Display
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("১. প্যাকেজ নাম (Package Name):", fontSize = 11.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Bold)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = appPackageName,
-                                fontSize = 11.sp,
-                                color = Color.White,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "Copy",
-                                tint = Color(0xFF3B82F6),
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clickable {
-                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(appPackageName))
-                                        Toast.makeText(context, "প্যাকেজ নাম কপি করা হয়েছে!", Toast.LENGTH_SHORT).show()
-                                    }
-                            )
-                        }
-                    }
-
-                    // SHA-1 Display
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("২. আপনার এই অ্যাপের SHA-1 ফিঙ্গারপ্রিন্ট:", fontSize = 11.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Bold)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = appSha1,
-                                fontSize = 11.sp,
-                                color = Color.White,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "Copy",
-                                tint = Color(0xFF3B82F6),
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clickable {
-                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(appSha1))
-                                        Toast.makeText(context, "SHA-1 কপি করা হয়েছে!", Toast.LENGTH_SHORT).show()
-                                    }
-                            )
-                        }
-                    }
-
-                    Divider(color = Color.White.copy(alpha = 0.05f))
-
-                    Text(
-                        text = "৩. সমাধান করার সহজ ৩টি ধাপ:\n" +
-                               "• আপনার Google Cloud Console বা Firebase Console-এ যান।\n" +
-                               "• আপনার প্রজেক্টের Settings > Project Settings > General ট্যাবে অ্যান্ড্রয়েড অ্যাপ সেকশনে যান।\n" +
-                               "• 'Add fingerprint' বাটনে ক্লিক করে উপরের SHA-1 কি-টি পেস্ট করে সেভ করুন।\n" +
-                               "ব্যাস! এবার অ্যাপ পুনরায় ওপেন করে সরাসরি জিমেইল লগইন করলেই গুগল ড্রাইভ ব্যাকআপ ও রিস্টোর শতভাগ কাজ করবে।",
-                        fontSize = 11.sp,
-                        color = Color(0xFF34D399),
-                        lineHeight = 16.sp,
-                        fontWeight = FontWeight.Medium
-                    )
                 }
             }
         }
@@ -10284,85 +10207,6 @@ fun ProfileTabScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showNameEditDialog = false }) {
-                    Text("বাতিল", color = Color(0xFF94A3B8))
-                }
-            }
-        )
-    }
-
-    // Alternative Login Dialog
-    if (showAlternativeLoginDialog) {
-        AlertDialog(
-            onDismissRequest = { showAlternativeLoginDialog = false },
-            containerColor = Color(0xFF0D1527),
-            title = {
-                Text(
-                    text = "বিকল্প জিমেইল লগইন",
-                    color = Color.White,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(vertical = 8.dp)
-                ) {
-                    Text(
-                        text = "গুগল প্লে সার্ভিস বা কানেকশন ত্রুটির কারণে সরাসরি লগইন সম্ভব না হলে আপনার জিমেইল ও নাম দিয়ে বিকল্প উপায়ে লগইন করুন:",
-                        fontSize = 12.sp,
-                        color = Color(0xFF94A3B8)
-                    )
-                    OutlinedTextField(
-                        value = alternativeEmailInput,
-                        onValueChange = { alternativeEmailInput = it },
-                        label = { Text("জিমেইল এড্রেস", color = Color(0xFF94A3B8)) },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF3B82F6),
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
-                            focusedContainerColor = Color(0xFF131C33),
-                            unfocusedContainerColor = Color(0xFF131C33),
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = alternativeNameInput,
-                        onValueChange = { alternativeNameInput = it },
-                        label = { Text("আপনার নাম", color = Color(0xFF94A3B8)) },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF3B82F6),
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
-                            focusedContainerColor = Color(0xFF131C33),
-                            unfocusedContainerColor = Color(0xFF131C33),
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (alternativeEmailInput.isNotBlank() && alternativeNameInput.isNotBlank()) {
-                            viewModel.setGoogleSignIn(alternativeEmailInput, alternativeNameInput, true)
-                            showAlternativeLoginDialog = false
-                            Toast.makeText(context, "লগইন সফল হয়েছে!", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "দয়া করে সঠিক জিমেইল ও নাম লিখুন!", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6))
-                ) {
-                    Text("লগইন সম্পন্ন করুন", fontWeight = FontWeight.Bold, color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAlternativeLoginDialog = false }) {
                     Text("বাতিল", color = Color(0xFF94A3B8))
                 }
             }

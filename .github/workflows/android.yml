@@ -21,8 +21,9 @@ jobs:
         distribution: 'zulu'
         java-version: '21'
 
-    - name: Download Valid Gradle Wrapper
+    - name: Fix and Download Valid Gradle Wrapper
       run: |
+        mkdir -p gradle/wrapper
         cd gradle/wrapper
         rm -f gradle-wrapper.jar
         curl -LO https://raw.githubusercontent.com/gradle/gradle/v9.3.1/gradle/wrapper/gradle-wrapper.jar
@@ -37,15 +38,11 @@ jobs:
       run: |
         yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
-    - name: List Files
-      run: ls -la
-
     - name: Prepare Environment Variables
       run: |
         if [ -f .env.example ]; then
           cp .env.example .env
         else
-          echo "No .env.example found, creating empty .env"
           touch .env
         fi
 
