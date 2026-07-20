@@ -880,6 +880,10 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
     }
 
     fun importBackup(jsonStr: String, overwrite: Boolean = true): Boolean {
+        val trimmed = jsonStr.trim()
+        if (trimmed.startsWith("<") || trimmed.contains("html", ignoreCase = true) || trimmed.contains("doctype", ignoreCase = true)) {
+            return false
+        }
         return try {
             val root = JSONObject(jsonStr)
             
@@ -969,6 +973,10 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
     }
 
     fun importBackupCsv(csvStr: String, overwrite: Boolean = false): Boolean {
+        val trimmed = csvStr.trim()
+        if (trimmed.startsWith("<") || trimmed.contains("html", ignoreCase = true) || trimmed.contains("doctype", ignoreCase = true)) {
+            return false
+        }
         return try {
             val lines = csvStr.lines()
             if (lines.size <= 1) return false
@@ -1100,6 +1108,12 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
                     }
                     
                     val bodyStr = response.body?.string() ?: ""
+                    if (bodyStr.trim().startsWith("<") || bodyStr.contains("html", ignoreCase = true) || bodyStr.contains("doctype", ignoreCase = true)) {
+                        withContext(Dispatchers.Main) {
+                            onResult(false, "ত্রুটি: সঠিক ব্যাকআপ ফাইলের বদলে একটি ওয়েব পেজ (HTML) পাওয়া গেছে। আপনার জিমেইল সাইন-ইন ঠিক করতে হবে।")
+                        }
+                        return@launch
+                    }
                     val searchRoot = JSONObject(bodyStr)
                     val filesArray = searchRoot.getJSONArray("files")
                     var fileId: String? = null
@@ -1146,7 +1160,14 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
                                 return@launch
                             }
                             
-                            val newFileId = JSONObject(metaResponse.body?.string() ?: "").getString("id")
+                            val metaBody = metaResponse.body?.string() ?: ""
+                            if (metaBody.trim().startsWith("<") || metaBody.contains("html", ignoreCase = true) || metaBody.contains("doctype", ignoreCase = true)) {
+                                withContext(Dispatchers.Main) {
+                                    onResult(false, "ত্রুটি: সঠিক রেসপন্সের বদলে একটি ওয়েব পেজ (HTML) পাওয়া গেছে। আপনার জিমেইল সাইন-ইন ঠিক করতে হবে।")
+                                }
+                                return@launch
+                            }
+                            val newFileId = JSONObject(metaBody).getString("id")
                             
                             // Upload content
                             val mediaRequest = Request.Builder()
@@ -1230,7 +1251,11 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
                         withContext(Dispatchers.Main) {
                             if (downloadResponse.isSuccessful) {
                                 val backupContent = downloadResponse.body?.string() ?: ""
-                                onResult(true, "গুগল ড্রাইভ থেকে ব্যাকআপ সফলভাবে ডাউনলোড করা হয়েছে!", backupContent)
+                                if (backupContent.trim().startsWith("<") || backupContent.contains("html", ignoreCase = true) || backupContent.contains("doctype", ignoreCase = true)) {
+                                    onResult(false, "ত্রুটি: গুগল ড্রাইভ থেকে সঠিক ব্যাকআপ ফাইলের বদলে একটি ওয়েব পেজ (HTML) পাওয়া গেছে। সাধারণত আপনার জিমেইল সাইন-ইন বা জিমেইল কানেকশন ঠিকমতো কাজ না করলে এমনটি ঘটে।", null)
+                                } else {
+                                    onResult(true, "গুগল ড্রাইভ থেকে ব্যাকআপ সফলভাবে ডাউনলোড করা হয়েছে!", backupContent)
+                                }
                             } else {
                                 onResult(false, "ডাউনলোড ব্যর্থ: ${downloadResponse.code}", null)
                             }
@@ -9780,6 +9805,25 @@ fun ProfileTabScreen(
                                 .clickable { showAlternativeLoginDialog = true }
                                 .padding(top = 4.dp)
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "জিমেইল সেশন রিসেট/লগআউট করুন",
+                            fontSize = 11.sp,
+                            color = Color(0xFFEF4444),
+                            fontWeight = FontWeight.Normal,
+                            modifier = Modifier
+                                .clickable {
+                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+                                    val client = GoogleSignIn.getClient(context, gso)
+                                    client.signOut().addOnCompleteListener {
+                                        client.revokeAccess().addOnCompleteListener {
+                                            viewModel.setGoogleSignIn("", "", false)
+                                            Toast.makeText(context, "জিমেইল সেশন সম্পূর্ণ রিসেট করা হয়েছে!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                                .padding(vertical = 4.dp)
+                        )
                     }
                 } else {
                     // Logged in: Show Auto-backup status and actions
@@ -9849,16 +9893,13 @@ fun ProfileTabScreen(
                             // Logout Button
                             Button(
                                 onClick = {
-                                    val account = GoogleSignIn.getLastSignedInAccount(context)
-                                    if (account != null) {
-                                        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                        GoogleSignIn.getClient(context, gso).signOut().addOnCompleteListener {
+                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+                                    val client = GoogleSignIn.getClient(context, gso)
+                                    client.signOut().addOnCompleteListener {
+                                        client.revokeAccess().addOnCompleteListener {
                                             viewModel.setGoogleSignIn("", "", false)
-                                            Toast.makeText(context, "লগআউট করা হয়েছে!", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "জিমেইল সম্পূর্ণ লগআউট করা হয়েছে!", Toast.LENGTH_SHORT).show()
                                         }
-                                    } else {
-                                        viewModel.setGoogleSignIn("", "", false)
-                                        Toast.makeText(context, "লগআউট করা হয়েছে!", Toast.LENGTH_SHORT).show()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D).copy(alpha = 0.3f)),
