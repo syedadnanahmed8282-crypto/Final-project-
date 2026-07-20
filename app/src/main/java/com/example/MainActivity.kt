@@ -95,6 +95,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+object Scopes {
+    const val DRIVE_APP_DATA = "https://www.googleapis.com/auth/drive.appdata"
+}
+
 // --- ENGLISH TO BENGALI DIGITS TRANSLATION UTILS ---
 fun String.toBanglaDigits(): String {
     val englishDigits = listOf('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')
@@ -8356,7 +8360,8 @@ fun SettingsDialog(
                                     driveStatusText = "গুগল ড্রাইভের সাথে সিঙ্ক করা হচ্ছে..."
                                     val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
                                         .requestEmail()
-                                        .requestScopes(Scope("https://www.googleapis.com/auth/drive.appdata"))
+                                        .requestProfile()
+                                        .requestScopes(Scope(Scopes.DRIVE_APP_DATA))
                                         .build()
                                     val googleSignInClient = GoogleSignIn.getClient(context, gso)
                                     val account = GoogleSignIn.getLastSignedInAccount(context)
@@ -8406,7 +8411,8 @@ fun SettingsDialog(
                                     driveStatusText = "গুগল ড্রাইভ থেকে ব্যাকআপ খোঁজা হচ্ছে..."
                                     val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
                                         .requestEmail()
-                                        .requestScopes(Scope("https://www.googleapis.com/auth/drive.appdata"))
+                                        .requestProfile()
+                                        .requestScopes(Scope(Scopes.DRIVE_APP_DATA))
                                         .build()
                                     val googleSignInClient = GoogleSignIn.getClient(context, gso)
                                     val account = GoogleSignIn.getLastSignedInAccount(context)
@@ -9639,8 +9645,16 @@ fun ProfileTabScreen(
             }
         } catch (e: ApiException) {
             e.printStackTrace()
+            val statusCode = e.statusCode
+            val errorDetail = when (statusCode) {
+                10 -> "ত্রুটি ১০ (DEVELOPER_ERROR): আপনার গুগল ক্লাউড কনসোলে এই অ্যাপের সঠিক 'প্যাকেজ নাম' (${context.packageName}) এবং সঠিক 'SHA-1' রেজিস্টার করা নেই।"
+                12500 -> "ত্রুটি ১২৫০০ (SIGN_IN_FAILED): গুগল সাইন-ইন ব্যর্থ। আপনার গুগল এপিআই কনসোল কনফিগারেশন চেক করুন।"
+                7 -> "ত্রুটি ৭ (NETWORK_ERROR): ইন্টারনেট সংযোগে সমস্যা হচ্ছে।"
+                16 -> "ত্রুটি ১৬ (CANCELED): সাইন-ইন বাতিল করা হয়েছে।"
+                else -> "গুগল সাইন-ইন ব্যর্থ হয়েছে। ত্রুটি কোড: $statusCode"
+            }
             showAlternativeLoginDialog = true
-            Toast.makeText(context, "সরাসরি গুগল কানেকশনে সমস্যা হচ্ছে, দয়া করে বিকল্প লগইন পদ্ধতিটি ব্যবহার করুন।", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, errorDetail, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -9768,7 +9782,8 @@ fun ProfileTabScreen(
                             onClick = {
                                 val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
                                     .requestEmail()
-                                    .requestScopes(Scope("https://www.googleapis.com/auth/drive.appdata"))
+                                    .requestProfile()
+                                    .requestScopes(Scope(Scopes.DRIVE_APP_DATA))
                                     .build()
                                 val googleSignInClient = GoogleSignIn.getClient(context, gso)
                                 googleSignInLauncher.launch(googleSignInClient.signInIntent)

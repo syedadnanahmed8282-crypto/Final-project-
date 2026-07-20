@@ -21,13 +21,6 @@ jobs:
         distribution: 'zulu'
         java-version: '21'
 
-    - name: Download Valid Gradle Wrapper
-      run: |
-        cd gradle/wrapper
-        rm -f gradle-wrapper.jar
-        curl -LO https://raw.githubusercontent.com/gradle/gradle/v9.3.1/gradle/wrapper/gradle-wrapper.jar
-        cd ../..
-
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
       with:
@@ -49,15 +42,13 @@ jobs:
           touch .env
         fi
 
-    - name: Decode Personal Debug Keystore
-      env:
-        DEBUG_KEYSTORE_DATA: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+    - name: Decode or Generate Debug Keystore
       run: |
-        if [ -n "$DEBUG_KEYSTORE_DATA" ]; then
-          echo "Decoding personal debug.keystore from Secrets..."
-          echo "$DEBUG_KEYSTORE_DATA" | base64 --decode > debug.keystore
+        if [ -f debug.keystore.base64 ]; then
+          echo "Decoding debug.keystore.base64..."
+          base64 --decode debug.keystore.base64 > debug.keystore
         else
-          echo "Secret not found, generating a fallback debug.keystore..."
+          echo "debug.keystore.base64 not found, generating a new debug.keystore..."
           keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug, O=Android, C=US"
         fi
 
@@ -67,6 +58,6 @@ jobs:
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
-        name: Smart-Manager-Debug-APK
+        name: Taka-Hisab-Debug-APK
         path: app/build/outputs/apk/debug/app-debug.apk
         retention-days: 7
