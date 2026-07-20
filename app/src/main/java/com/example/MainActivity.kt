@@ -9654,8 +9654,9 @@ fun ProfileTabScreen(
     var nameInput by remember { mutableStateOf("") }
     var isRegisterMode by remember { mutableStateOf(false) }
     var isPasswordVisible by remember { mutableStateOf(false) }
-    var dbUrlInput by remember { mutableStateOf(firebaseDbUrl) }
+    var dbUrlInput by remember(firebaseDbUrl) { mutableStateOf(firebaseDbUrl) }
     var isDbUrlEditing by remember { mutableStateOf(false) }
+    var showFirebaseSetupGuide by remember { mutableStateOf(false) }
 
     val avatarConfig = listOf(
         Pair(Color(0xFF3B82F6), Icons.Default.Person),       // Cyan/Blue
@@ -9863,6 +9864,71 @@ fun ProfileTabScreen(
                                 .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
                                 .padding(horizontal = 10.dp, vertical = 8.dp)
                         )
+                    }
+
+                    // Setup Guide Trigger
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showFirebaseSetupGuide = !showFirebaseSetupGuide }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (showFirebaseSetupGuide) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = Color(0xFF3B82F6),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "কিভাবে নিজের ফায়ারবেস ডাটাবেস লিঙ্ক করবেন?",
+                            fontSize = 11.sp,
+                            color = Color(0xFF3B82F6),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    if (showFirebaseSetupGuide) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF1E293B),
+                            border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.3f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "ফায়ারবেস কানেকশন গাইড:",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFFBBF24)
+                                )
+                                Text(
+                                    text = "১. প্রথমে console.firebase.google.com-এ গিয়ে একটি ফ্রি প্রজেক্ট তৈরি করুন।",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                                Text(
+                                    text = "২. বাম পাশের Build মেনু থেকে Realtime Database-এ যান এবং Create Database-এ ক্লিক করুন।",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                                Text(
+                                    text = "৩. ডাটাবেস সিকিউরিটি Rules ট্যাবে গিয়ে read এবং write পরিবর্তন করে true করে দিন এবং Publish করুন:\n{\n  \"rules\": {\n    \".read\": true,\n    \".write\": true\n  }\n}",
+                                    fontSize = 9.sp,
+                                    color = Color(0xFF34D399),
+                                    lineHeight = 13.sp
+                                )
+                                Text(
+                                    text = "৪. এরপর ডেটাবেস ড্যাশবোর্ডের উপরে থাকা https://... লিঙ্কটি কপি করে এই অ্যাপের 'পরিবর্তন' বাটনে ক্লিক করে পেস্ট করে সংরক্ষণ করুন।",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
                     }
                 }
 
