@@ -9818,6 +9818,8 @@ fun ProfileTabScreen(
                                             isManualSyncing = false
                                             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                                         }
+                                    } else {
+                                        Toast.makeText(context, "সরাসরি গুগল ড্রাইভ সংযোগ পাওয়া যায়নি। বিকল্প লগইন ব্যবহার করলে ক্লাউড ব্যাকআপ সম্ভব নয়। দয়া করে সরাসরি জিমেইল দিয়ে লগইন করুন অথবা নিচে দেওয়া SHA-1 আপনার গুগল ক্লাউড কনসোলে যোগ করুন।", Toast.LENGTH_LONG).show()
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
@@ -9847,8 +9849,14 @@ fun ProfileTabScreen(
                             // Logout Button
                             Button(
                                 onClick = {
-                                    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                    GoogleSignIn.getClient(context, gso).signOut().addOnCompleteListener {
+                                    val account = GoogleSignIn.getLastSignedInAccount(context)
+                                    if (account != null) {
+                                        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+                                        GoogleSignIn.getClient(context, gso).signOut().addOnCompleteListener {
+                                            viewModel.setGoogleSignIn("", "", false)
+                                            Toast.makeText(context, "লগআউট করা হয়েছে!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
                                         viewModel.setGoogleSignIn("", "", false)
                                         Toast.makeText(context, "লগআউট করা হয়েছে!", Toast.LENGTH_SHORT).show()
                                     }
@@ -9878,6 +9886,145 @@ fun ProfileTabScreen(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Connection Guide & SHA-1 Card for GitHub builds or Google Sign-In issues
+        var showGuideByExpansion by remember { mutableStateOf(false) }
+        val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+        val appPackageName = context.packageName
+        val appSha1 = remember { getAppSignaturesSHA1(context) }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.2f))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showGuideByExpansion = !showGuideByExpansion },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = Color(0xFF3B82F6),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "গুগল ড্রাইভ ব্যাকআপ সংযোগ নির্দেশিকা (SHA-1)",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    Icon(
+                        imageVector = if (showGuideByExpansion) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Expand",
+                        tint = Color(0xFF94A3B8),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                if (showGuideByExpansion) {
+                    Text(
+                        text = "গিটহাব বা অন্য কোনো সার্ভিস থেকে অ্যাপটি বিল্ড করলে জিমেইল লগইন বা গুগল ড্রাইভ ব্যাকআপ কাজ না করার মূল কারণ হলো গুগল ডেভেলপার কনসোলে আপনার অ্যাপের স্বাক্ষর (SHA-1 fingerprint) যুক্ত না থাকা। নিচের তথ্যগুলো ব্যবহার করে এটি ঠিক করতে পারেন:",
+                        fontSize = 11.sp,
+                        color = Color(0xFF94A3B8),
+                        lineHeight = 16.sp
+                    )
+
+                    Divider(color = Color.White.copy(alpha = 0.05f))
+
+                    // Package Name Display
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("১. প্যাকেজ নাম (Package Name):", fontSize = 11.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = appPackageName,
+                                fontSize = 11.sp,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy",
+                                tint = Color(0xFF3B82F6),
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable {
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(appPackageName))
+                                        Toast.makeText(context, "প্যাকেজ নাম কপি করা হয়েছে!", Toast.LENGTH_SHORT).show()
+                                    }
+                            )
+                        }
+                    }
+
+                    // SHA-1 Display
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("২. আপনার এই অ্যাপের SHA-1 ফিঙ্গারপ্রিন্ট:", fontSize = 11.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = appSha1,
+                                fontSize = 11.sp,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy",
+                                tint = Color(0xFF3B82F6),
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable {
+                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(appSha1))
+                                        Toast.makeText(context, "SHA-1 কপি করা হয়েছে!", Toast.LENGTH_SHORT).show()
+                                    }
+                            )
+                        }
+                    }
+
+                    Divider(color = Color.White.copy(alpha = 0.05f))
+
+                    Text(
+                        text = "৩. সমাধান করার সহজ ৩টি ধাপ:\n" +
+                               "• আপনার Google Cloud Console বা Firebase Console-এ যান।\n" +
+                               "• আপনার প্রজেক্টের Settings > Project Settings > General ট্যাবে অ্যান্ড্রয়েড অ্যাপ সেকশনে যান।\n" +
+                               "• 'Add fingerprint' বাটনে ক্লিক করে উপরের SHA-1 কি-টি পেস্ট করে সেভ করুন।\n" +
+                               "ব্যাস! এবার অ্যাপ পুনরায় ওপেন করে সরাসরি জিমেইল লগইন করলেই গুগল ড্রাইভ ব্যাকআপ ও রিস্টোর শতভাগ কাজ করবে।",
+                        fontSize = 11.sp,
+                        color = Color(0xFF34D399),
+                        lineHeight = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }
@@ -10937,3 +11084,29 @@ fun UserProfileAvatar(
         }
     }
 }
+
+fun getAppSignaturesSHA1(context: Context): String {
+    try {
+        val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            context.packageManager.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+        } else {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNATURES)
+        }
+        val signatures = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            packageInfo.signingInfo?.apkContentsSigners
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.signatures
+        }
+        if (signatures != null && signatures.isNotEmpty()) {
+            val md = java.security.MessageDigest.getInstance("SHA-1")
+            val publicKey = md.digest(signatures[0].toByteArray())
+            return publicKey.joinToString(":") { String.format("%02X", it) }
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return "পাওয়া যায়নি"
+}
+
