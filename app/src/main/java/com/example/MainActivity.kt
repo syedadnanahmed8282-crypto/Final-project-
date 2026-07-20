@@ -51,6 +51,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -80,6 +81,8 @@ import java.text.SimpleDateFormat
 import java.util.*
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -204,7 +207,17 @@ class MainViewModel(private val repository: DailyEntryRepository, private val co
     val profileAvatarIndex = MutableStateFlow(prefs.getInt("PROFILE_AVATAR_INDEX", 0))
     val profileCustomAvatarUri = MutableStateFlow(prefs.getString("PROFILE_CUSTOM_AVATAR_URI", "") ?: "")
 
-    val firebaseDbUrl = MutableStateFlow(prefs.getString("FIREBASE_DB_URL", "https://takahishab-default-rtdb.firebaseio.com/") ?: "https://takahishab-default-rtdb.firebaseio.com/")
+    val firebaseDbUrl = MutableStateFlow(
+        prefs.getString("FIREBASE_DB_URL", "https://smart-manager-d02fb-default-rtdb.firebaseio.com/")?.let {
+            if (it == "https://takahishab-default-rtdb.firebaseio.com/" || it == "https://takahishab-default-rtdb.firebaseio.com") {
+                // Migrate to new default
+                prefs.edit().putString("FIREBASE_DB_URL", "https://smart-manager-d02fb-default-rtdb.firebaseio.com/").apply()
+                "https://smart-manager-d02fb-default-rtdb.firebaseio.com/"
+            } else {
+                it
+            }
+        } ?: "https://smart-manager-d02fb-default-rtdb.firebaseio.com/"
+    )
 
     init {
         syncOnAppLaunch()
@@ -1419,6 +1432,11 @@ fun TakaHishabMainScreen(viewModel: MainViewModel) {
     var showIncomeTargetDialog by remember { mutableStateOf(false) }
     var showMonthlyHistoryDialog by remember { mutableStateOf(false) }
 
+    // Calculator states
+    var isCalculatorVisible by remember { mutableStateOf(false) }
+    var initialQtyByCal by remember { mutableStateOf("") }
+    var initialExpenseByCal by remember { mutableStateOf("") }
+
     fun getDayStartMillis(millis: Long): Long {
         val cal = Calendar.getInstance()
         cal.timeInMillis = millis
@@ -1854,7 +1872,8 @@ fun TakaHishabMainScreen(viewModel: MainViewModel) {
                         onNavigateToGoals = { showIncomeTargetDialog = true },
                         onNavigateToSettings = { showSettingsDialog = true },
                         onNavigateToSetBudget = { activeSubScreen = "SET_BUDGET" },
-                        onProfileClick = { activeBottomTab = "Profile" }
+                        onProfileClick = { activeBottomTab = "Profile" },
+                        onCalculatorClick = { isCalculatorVisible = true }
                     )
                 } else if (activeSubScreen == "NOTEBOOK_SELECTOR") {
                     NoteBookSelectorScreen(
@@ -4896,9 +4915,13 @@ fun TakaHishabMainScreen(viewModel: MainViewModel) {
             dailyTarget = dailyTarget,
             defaultFolder = selectedFolder,
             isAltMode = (currentKhataMode == "ALT"),
+            initialQty = initialQtyByCal,
+            initialExpense = initialExpenseByCal,
             onDismiss = {
                 showAddDialog = false
                 entryToEdit = null
+                initialQtyByCal = ""
+                initialExpenseByCal = ""
             },
             onSave = { updatedQty, updatedExpense, updatedIncome, updatedCategory, updatedIsIncome, updatedNote, updatedFolder, updatedDate ->
                 if (entryToEdit == null) {
@@ -4930,6 +4953,8 @@ fun TakaHishabMainScreen(viewModel: MainViewModel) {
                 }
                 showAddDialog = false
                 entryToEdit = null
+                initialQtyByCal = ""
+                initialExpenseByCal = ""
             }
         )
     }
@@ -4939,6 +4964,24 @@ fun TakaHishabMainScreen(viewModel: MainViewModel) {
         SettingsDialog(
             viewModel = viewModel,
             onDismiss = { showSettingsDialog = false }
+        )
+    }
+
+    // 3D FLOATING CALCULATOR DIALOG
+    if (isCalculatorVisible) {
+        Royal3DCalculatorDialog(
+            onDismiss = { isCalculatorVisible = false },
+            onTransferToEntry = { value, type ->
+                if (type == "QTY") {
+                    initialQtyByCal = value
+                    initialExpenseByCal = ""
+                } else {
+                    initialExpenseByCal = value
+                    initialQtyByCal = ""
+                }
+                showAddDialog = true
+                isCalculatorVisible = false
+            }
         )
     }
 
@@ -7616,13 +7659,15 @@ fun AddEditEntryDialog(
     onDismiss: () -> Unit,
     onSave: (qty: Int, expense: Double, income: Double, category: String, isIncome: Boolean, note: String, folder: String, date: Long) -> Unit,
     defaultFolder: String = "সাধারণ হিসাব",
-    isAltMode: Boolean = false
+    isAltMode: Boolean = false,
+    initialQty: String = "",
+    initialExpense: String = ""
 ) {
     val context = LocalContext.current
 
     // Fields states
-    var inputQty by remember { mutableStateOf(entryToEdit?.quantity?.let { if (it > 0) it.toString() else "" } ?: "") }
-    var inputExpense by remember { mutableStateOf(entryToEdit?.expense?.let { if (it > 0.0) it.toInt().toString() else "" } ?: "") }
+    var inputQty by remember { mutableStateOf(entryToEdit?.quantity?.let { if (it > 0) it.toString() else "" } ?: initialQty) }
+    var inputExpense by remember { mutableStateOf(entryToEdit?.expense?.let { if (it > 0.0) it.toInt().toString() else "" } ?: initialExpense) }
     var inputNote by remember { mutableStateOf(entryToEdit?.note ?: "") }
     var selectedFolder by remember {
         mutableStateOf(
@@ -8074,6 +8119,446 @@ fun AddEditEntryDialog(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+// --- SECURE & INDEPENDENT RECURSIVE DESCENT MATH EVALUATOR ---
+object SimpleMathParser {
+    fun eval(str: String): Double {
+        return object : Any() {
+            var pos = -1
+            var ch = 0
+
+            fun nextChar() {
+                ch = if (++pos < str.length) str[pos].code else -1
+            }
+
+            fun eat(charToEat: Int): Boolean {
+                while (ch == ' '.code) nextChar()
+                if (ch == charToEat) {
+                    nextChar()
+                    return true
+                }
+                return false
+            }
+
+            fun parse(): Double {
+                nextChar()
+                val x = parseExpression()
+                if (pos < str.length) throw RuntimeException("Unexpected character: " + ch.toChar())
+                return x
+            }
+
+            fun parseExpression(): Double {
+                var x = parseTerm()
+                while (true) {
+                    if (eat('+'.code)) x += parseTerm() // addition
+                    else if (eat('-'.code)) x -= parseTerm() // subtraction
+                    else return x
+                }
+            }
+
+            fun parseTerm(): Double {
+                var x = parseFactor()
+                while (true) {
+                    if (eat('*'.code)) x *= parseFactor() // multiplication
+                    else if (eat('/'.code)) x /= parseFactor() // division
+                    else return x
+                }
+            }
+
+            fun parseFactor(): Double {
+                if (eat('+'.code)) return parseFactor() // unary plus
+                if (eat('-'.code)) return -parseFactor() // unary minus
+
+                var x: Double
+                val startPos = pos
+                if (eat('('.code)) { // parentheses
+                    x = parseExpression()
+                    eat(')'.code)
+                } else if ((ch >= '0'.code && ch <= '9'.code) || ch == '.'.code) { // numbers
+                    while ((ch >= '0'.code && ch <= '9'.code) || ch == '.'.code) nextChar()
+                    x = str.substring(startPos, pos).toDouble()
+                } else {
+                    throw RuntimeException("Unexpected: " + ch.toChar())
+                }
+                return x
+            }
+        }.parse()
+    }
+}
+
+// Helper to format result cleanly
+fun formatCalcResult(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        value.toInt().toString()
+    } else {
+        String.format(Locale.US, "%.2f", value)
+    }
+}
+
+// --- 3D FLOATING ROYAL BLUE CALCULATOR DIALOG ---
+@Composable
+fun Royal3DCalculatorDialog(
+    onDismiss: () -> Unit,
+    onTransferToEntry: (value: String, type: String) -> Unit
+) {
+    var expression by remember { mutableStateOf("") }
+    var resultText by remember { mutableStateOf("0") }
+    var showTransferPopup by remember { mutableStateOf(false) }
+
+    LaunchedEffect(expression) {
+        if (expression.isNotBlank()) {
+            try {
+                var evalExpr = expression.trim()
+                // Trim trailing operators to allow live calculation as user types
+                while (evalExpr.isNotEmpty() && (evalExpr.endsWith("+") || evalExpr.endsWith("-") || evalExpr.endsWith("*") || evalExpr.endsWith("/"))) {
+                    evalExpr = evalExpr.substring(0, evalExpr.length - 1).trim()
+                }
+                if (evalExpr.isNotBlank()) {
+                    val res = SimpleMathParser.eval(evalExpr)
+                    resultText = formatCalcResult(res)
+                } else {
+                    resultText = "0"
+                }
+            } catch (e: Exception) {
+                // Keep last result or do nothing
+            }
+        } else {
+            resultText = "0"
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1E36)), // Royal dark background
+            border = BorderStroke(2.dp, Color(0xFF2563EB)), // Glowing royal blue border
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Top Header Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Calculate,
+                            contentDescription = null,
+                            tint = Color(0xFFFBBF24), // Amber/Yellow
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Text(
+                            text = "স্মার্ট ক্যালকুলেটর",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "বন্ধ করুন",
+                            tint = Color(0xFF94A3B8),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                // Calc Display Screen
+                Surface(
+                    color = Color(0xFF070F1E),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFF1E3A8A)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(90.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.SpaceBetween,
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        // Expression Text (Bangla display)
+                        Text(
+                            text = expression.ifEmpty { " " }
+                                .replace("*", "×")
+                                .replace("/", "÷")
+                                .toBanglaDigits(),
+                            color = Color(0xFF94A3B8),
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        // Result Text (Bangla display, holds long-press detector)
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = resultText.toBanglaDigits(),
+                                color = Color(0xFFFBBF24), // Dark Yellow text
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Black,
+                                textAlign = TextAlign.End,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .pointerInput(resultText) {
+                                        detectTapGestures(
+                                            onLongPress = {
+                                                if (resultText != "0" && resultText.isNotBlank()) {
+                                                    showTransferPopup = true
+                                                }
+                                            }
+                                        )
+                                    }
+                            )
+                            Text(
+                                text = "এন্ট্রিতে যোগ করতে ফলাফলের উপর চেপে ধরে রাখুন",
+                                color = Color(0xFF3B82F6).copy(alpha = 0.8f),
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+
+                // Grid Buttons
+                val calcButtons = listOf(
+                    listOf("C", "(", ")", "÷"),
+                    listOf("৭", "৮", "৯", "×"),
+                    listOf("৪", "৫", "৬", "-"),
+                    listOf("১", "২", "৩", "+"),
+                    listOf("০", ".", "⌫", "=")
+                )
+
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    calcButtons.forEach { row ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            row.forEach { btnText ->
+                                val isOperator = btnText in listOf("C", "(", ")", "÷", "×", "-", "+", "⌫", "=")
+                                val buttonColor = if (btnText == "=") {
+                                    Color(0xFF10B981) // Green
+                                } else if (btnText == "C" || btnText == "⌫") {
+                                    Color(0xFFEF4444) // Red
+                                } else if (isOperator) {
+                                    Color(0xFF1E3A8A) // Dark Royal Blue
+                                } else {
+                                    Color(0xFF172554) // Darker Royal Blue for numbers
+                                }
+
+                                val textColor = if (btnText == "=" || btnText == "C" || btnText == "⌫") {
+                                    Color.White
+                                } else if (isOperator) {
+                                    Color.White
+                                } else {
+                                    Color(0xFFFBBF24) // Dark Yellow
+                                }
+
+                                CalcButton3D(
+                                    text = btnText,
+                                    onClick = {
+                                        when (btnText) {
+                                            "C" -> {
+                                                expression = ""
+                                                resultText = "0"
+                                            }
+                                            "⌫" -> {
+                                                if (expression.isNotEmpty()) {
+                                                    expression = expression.substring(0, expression.length - 1)
+                                                }
+                                            }
+                                            "=" -> {
+                                                try {
+                                                    var evalExpr = expression.trim()
+                                                    while (evalExpr.isNotEmpty() && (evalExpr.endsWith("+") || evalExpr.endsWith("-") || evalExpr.endsWith("*") || evalExpr.endsWith("/"))) {
+                                                        evalExpr = evalExpr.substring(0, evalExpr.length - 1).trim()
+                                                    }
+                                                    if (evalExpr.isNotBlank()) {
+                                                        val res = SimpleMathParser.eval(evalExpr)
+                                                        val finalVal = formatCalcResult(res)
+                                                        expression = finalVal
+                                                        resultText = finalVal
+                                                    }
+                                                } catch (e: Exception) {
+                                                    resultText = "ভুল এক্সপ্রেশন"
+                                                }
+                                            }
+                                            else -> {
+                                                val mappedChar = when (btnText) {
+                                                    "০" -> "0"
+                                                    "১" -> "1"
+                                                    "২" -> "2"
+                                                    "৩" -> "3"
+                                                    "৪" -> "4"
+                                                    "৫" -> "5"
+                                                    "৬" -> "6"
+                                                    "৭" -> "7"
+                                                    "৮" -> "8"
+                                                    "৯" -> "9"
+                                                    "×" -> "*"
+                                                    "÷" -> "/"
+                                                    else -> btnText
+                                                }
+                                                expression += mappedChar
+                                            }
+                                        }
+                                    },
+                                    containerColor = buttonColor,
+                                    textColor = textColor,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(44.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showTransferPopup) {
+        AlertDialog(
+            onDismissRequest = { showTransferPopup = false },
+            containerColor = Color(0xFF0F172A),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Send, contentDescription = null, tint = Color(0xFF3B82F6))
+                    Text("হিসাব খাতায় যোগ করুন", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "ফলাফল: ৳ ${resultText.toBanglaDigits()}",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Color(0xFFFBBF24)
+                    )
+                    Text(
+                        text = "এই মানটি আপনার নোটবুকে কি হিসেবে এন্ট্রি করতে চান?",
+                        fontSize = 12.sp,
+                        color = Color(0xFF94A3B8)
+                    )
+                }
+            },
+            confirmButton = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            onTransferToEntry(resultText, "EXPENSE")
+                            showTransferPopup = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("দৈনিক খরচ (টাকা) হিসেবে যোগ করুন", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 13.sp)
+                    }
+                    Button(
+                        onClick = {
+                            val doubleVal = resultText.toDoubleOrNull() ?: 0.0
+                            val intQty = doubleVal.toInt().toString()
+                            onTransferToEntry(intQty, "QTY")
+                            showTransferPopup = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("মালের পরিমাণ (পিস) হিসেবে যোগ করুন", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 13.sp)
+                    }
+                    TextButton(
+                        onClick = { showTransferPopup = false },
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Text("বাতিল", color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun CalcButton3D(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    containerColor: Color,
+    textColor: Color
+) {
+    Box(
+        modifier = modifier
+            .clickable { onClick() }
+    ) {
+        // Shadow base layer
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset(y = 3.dp),
+            shape = RoundedCornerShape(10.dp),
+            color = containerColor.copy(alpha = 0.5f)
+        ) {}
+
+        // Front interactive layer
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = RoundedCornerShape(10.dp),
+            color = containerColor,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Text(
+                    text = text,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textColor
+                )
             }
         }
     }
@@ -8799,7 +9284,8 @@ fun DashboardHomeScreen(
     onNavigateToGoals: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToSetBudget: () -> Unit,
-    onProfileClick: () -> Unit
+    onProfileClick: () -> Unit,
+    onCalculatorClick: () -> Unit
 ) {
     val context = LocalContext.current
     
@@ -8893,87 +9379,87 @@ fun DashboardHomeScreen(
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-            shape = RoundedCornerShape(20.dp),
-            border = BorderStroke(1.5.dp, Color(0xFF3B82F6).copy(alpha = 0.3f))
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.2.dp, Color(0xFF3B82F6).copy(alpha = 0.3f))
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 Text(
                     text = "রিয়েল-টাইম সারাংশ (সব খাতা)",
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF94A3B8)
                 )
                 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     // Total Income (green accent)
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Box(modifier = Modifier.size(6.dp).background(Color(0xFF10B981), CircleShape))
-                            Text("মোট আয়", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Box(modifier = Modifier.size(5.dp).background(Color(0xFF10B981), CircleShape))
+                            Text("মোট আয়", fontSize = 10.sp, color = Color(0xFF94A3B8))
                         }
                         Text(
                             text = "৳ ${totalIncome.toInt().toBangla()}",
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Black,
                             color = Color(0xFF34D399)
                         )
                     }
 
                     // Total Expense (red accent)
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Box(modifier = Modifier.size(6.dp).background(Color(0xFFEF4444), CircleShape))
-                            Text("মোট ব্যয়", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Box(modifier = Modifier.size(5.dp).background(Color(0xFFEF4444), CircleShape))
+                            Text("মোট ব্যয়", fontSize = 10.sp, color = Color(0xFF94A3B8))
                         }
                         Text(
                             text = "৳ ${totalExpense.toInt().toBangla()}",
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Black,
                             color = Color(0xFFF87171)
                         )
                     }
 
                     // Remaining Balance (cyan accent)
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Box(modifier = Modifier.size(6.dp).background(Color(0xFF22D3EE), CircleShape))
-                            Text("অবশিষ্ট", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                            Box(modifier = Modifier.size(5.dp).background(Color(0xFF22D3EE), CircleShape))
+                            Text("অবशिष्ट", fontSize = 10.sp, color = Color(0xFF94A3B8))
                         }
                         Text(
                             text = "৳ ${balance.toInt().toBangla()}",
-                            fontSize = 15.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Black,
                             color = Color(0xFF22D3EE)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 // Mini balance ratio gauge bar
                 val totalSum = totalIncome + totalExpense
                 val incomePercent = if (totalSum > 0) (totalIncome / totalSum).toFloat() else 0.5f
                 val expensePercent = 1f - incomePercent
 
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             text = "আয়: ${(incomePercent * 100).toInt().toBangla()}%",
-                            fontSize = 9.sp,
+                            fontSize = 8.5.sp,
                             color = Color(0xFF34D399),
                             fontWeight = FontWeight.Bold
                         )
                         Text(
                             text = "ব্যয়: ${(expensePercent * 100).toInt().toBangla()}%",
-                            fontSize = 9.sp,
+                            fontSize = 8.5.sp,
                             color = Color(0xFFF87171),
                             fontWeight = FontWeight.Bold
                         )
@@ -8981,8 +9467,8 @@ fun DashboardHomeScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp))
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
                             .background(Color.White.copy(alpha = 0.05f))
                     ) {
                         Row(modifier = Modifier.fillMaxSize()) {
@@ -9004,14 +9490,6 @@ fun DashboardHomeScreen(
             }
         }
 
-        // 3. FEATURE CARDS GRID HEADER
-        Text(
-            text = "হিসাব ড্যাসবোর্ড ও ফিচারসমূহ",
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White
-        )
-
         // 4. THE TWO-COLUMN GRID OF FEATURE CARDS
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -9020,7 +9498,6 @@ fun DashboardHomeScreen(
             ) {
                 DashboardCard(
                     title = "নোট বুক",
-                    subtext = "আয়-ব্যয় ও মালের হিসাব",
                     icon = Icons.Default.Calculate,
                     iconColor = Color(0xFF3B82F6),
                     modifier = Modifier.weight(1f)
@@ -9030,7 +9507,6 @@ fun DashboardHomeScreen(
 
                 DashboardCard(
                     title = "রিপোর্ট ও গ্রাফ",
-                    subtext = "আয়-ব্যয় চার্ট ও এনালাইসিস",
                     icon = Icons.Default.TrendingUp,
                     iconColor = Color(0xFF10B981),
                     modifier = Modifier.weight(1f)
@@ -9040,16 +9516,25 @@ fun DashboardHomeScreen(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 DashboardCard(
                     title = "সেট বাজেট",
-                    subtext = "দৈনিক ও মাসিক লিমিট, মালের দর ও দৈনিক লক্ষ্য সেট করুন",
                     icon = Icons.Default.PieChart,
                     iconColor = Color(0xFFFBBF24),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.weight(1f)
                 ) {
                     onNavigateToSetBudget()
+                }
+
+                DashboardCard(
+                    title = "ক্যালকুলেটর",
+                    icon = Icons.Default.Calculate,
+                    iconColor = Color(0xFF3B82F6),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    onCalculatorClick()
                 }
             }
         }
@@ -9644,6 +10129,7 @@ fun ProfileTabScreen(
     val firebaseDbUrl by viewModel.firebaseDbUrl.collectAsStateWithLifecycle()
 
     var showAvatarDialog by remember { mutableStateOf(false) }
+    var showUrlEditDialog by remember { mutableStateOf(false) }
     var showNameEditDialog by remember { mutableStateOf(false) }
     var tempNameInput by remember { mutableStateOf("") }
     var isManualSyncing by remember { mutableStateOf(false) }
@@ -9794,141 +10280,25 @@ fun ProfileTabScreen(
                             color = Color(0xFF94A3B8)
                         )
                     }
-                }
 
-                Divider(color = Color.White.copy(alpha = 0.05f))
-
-                // Firebase/Supabase Server Configuration Row (Collapsible/Editable)
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    // URL button beautifully styled
+                    OutlinedButton(
+                        onClick = { showUrlEditDialog = true },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFF3B82F6),
+                            containerColor = Color(0xFF131C33)
+                        ),
+                        border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.height(32.dp)
                     ) {
                         Text(
-                            text = "অনলাইন ডাটাবেস এপিআই URL",
+                            text = "URL",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFFBBF24)
+                            color = Color(0xFF3B82F6)
                         )
-                        Text(
-                            text = if (isDbUrlEditing) "সংরক্ষণ করুন" else "পরিবর্তন",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF3B82F6),
-                            modifier = Modifier
-                                .clickable {
-                                    if (isDbUrlEditing) {
-                                        if (dbUrlInput.isNotBlank()) {
-                                            viewModel.updateFirebaseDbUrl(dbUrlInput)
-                                            Toast.makeText(context, "ডাটাবেস ইউআরএল আপডেট হয়েছে!", Toast.LENGTH_SHORT).show()
-                                        }
-                                        isDbUrlEditing = false
-                                    } else {
-                                        dbUrlInput = firebaseDbUrl
-                                        isDbUrlEditing = true
-                                    }
-                                }
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-
-                    if (isDbUrlEditing) {
-                        OutlinedTextField(
-                            value = dbUrlInput,
-                            onValueChange = { dbUrlInput = it },
-                            placeholder = { Text("https://example-default-rtdb.firebaseio.com/", color = Color(0xFF64748B)) },
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = Color(0xFF3B82F6),
-                                unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
-                                focusedContainerColor = Color(0xFF131C33),
-                                unfocusedContainerColor = Color(0xFF131C33)
-                            ),
-                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
-                        Text(
-                            text = firebaseDbUrl,
-                            fontSize = 11.sp,
-                            color = Color(0xFF94A3B8),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.Black.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 8.dp)
-                        )
-                    }
-
-                    // Setup Guide Trigger
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showFirebaseSetupGuide = !showFirebaseSetupGuide }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (showFirebaseSetupGuide) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                            contentDescription = null,
-                            tint = Color(0xFF3B82F6),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = "কিভাবে নিজের ফায়ারবেস ডাটাবেস লিঙ্ক করবেন?",
-                            fontSize = 11.sp,
-                            color = Color(0xFF3B82F6),
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-
-                    if (showFirebaseSetupGuide) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF1E293B),
-                            border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.3f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "ফায়ারবেস কানেকশন গাইড:",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFFBBF24)
-                                )
-                                Text(
-                                    text = "১. প্রথমে console.firebase.google.com-এ গিয়ে একটি ফ্রি প্রজেক্ট তৈরি করুন।",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF94A3B8)
-                                )
-                                Text(
-                                    text = "২. বাম পাশের Build মেনু থেকে Realtime Database-এ যান এবং Create Database-এ ক্লিক করুন।",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF94A3B8)
-                                )
-                                Text(
-                                    text = "৩. ডাটাবেস সিকিউরিটি Rules ট্যাবে গিয়ে read এবং write পরিবর্তন করে true করে দিন এবং Publish করুন:\n{\n  \"rules\": {\n    \".read\": true,\n    \".write\": true\n  }\n}",
-                                    fontSize = 9.sp,
-                                    color = Color(0xFF34D399),
-                                    lineHeight = 13.sp
-                                )
-                                Text(
-                                    text = "৪. এরপর ডেটাবেস ড্যাশবোর্ডের উপরে থাকা https://... লিঙ্কটি কপি করে এই অ্যাপের 'পরিবর্তন' বাটনে ক্লিক করে পেস্ট করে সংরক্ষণ করুন।",
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF94A3B8)
-                                )
-                            }
-                        }
                     }
                 }
 
@@ -10346,12 +10716,172 @@ fun ProfileTabScreen(
             }
         )
     }
+
+    // 3D FLOATING / POPUP DATABASE URL CONFIGURATION DIALOG
+    if (showUrlEditDialog) {
+        Dialog(onDismissRequest = { showUrlEditDialog = false }) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                border = BorderStroke(1.5.dp, Color(0xFF3B82F6)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Top Row Header
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Link,
+                                contentDescription = null,
+                                tint = Color(0xFFFBBF24),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "অনলাইন ডাটাবেস এপিআই URL",
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        IconButton(
+                            onClick = { showUrlEditDialog = false },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "বন্ধ করুন",
+                                tint = Color(0xFF94A3B8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    // TextField URL Input
+                    OutlinedTextField(
+                        value = dbUrlInput,
+                        onValueChange = { dbUrlInput = it },
+                        placeholder = { Text("https://example-default-rtdb.firebaseio.com/", color = Color(0xFF64748B)) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = Color(0xFF3B82F6),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                            focusedContainerColor = Color(0xFF131C33),
+                            unfocusedContainerColor = Color(0xFF131C33)
+                        ),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Reset to default button
+                    TextButton(
+                        onClick = {
+                            dbUrlInput = "https://smart-manager-d02fb-default-rtdb.firebaseio.com/"
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text(
+                            text = "ডিফল্ট এপিআই সেট করুন",
+                            color = Color(0xFF34D399),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Divider(color = Color.White.copy(alpha = 0.05f))
+
+                    // Setup guide inside popup
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "ফায়ারবেস কানেকশন গাইড:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFBBF24)
+                        )
+                        Text(
+                            text = "১. প্রথমে console.firebase.google.com-এ গিয়ে একটি ফ্রি প্রজেক্ট তৈরি করুন।",
+                            fontSize = 10.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                        Text(
+                            text = "২. বাম পাশের Build মেনু থেকে Realtime Database-এ যান এবং Create Database-এ ক্লিক করুন।",
+                            fontSize = 10.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                        Text(
+                            text = "৩. ডাটাবেস সিকিউরিটি Rules ট্যাবে গিয়ে read এবং write পরিবর্তন করে true করে দিন এবং Publish করুন:\n{\n  \"rules\": {\n    \".read\": true,\n    \".write\": true\n  }\n}",
+                            fontSize = 9.sp,
+                            color = Color(0xFF34D399),
+                            lineHeight = 13.sp
+                        )
+                        Text(
+                            text = "৪. এরপর ডেটাবেস ড্যাশবোর্ডের উপরে থাকা https://... লিঙ্কটি কপি করে এখানে পেস্ট করে সংরক্ষণ করুন।",
+                            fontSize = 10.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Buttons Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showUrlEditDialog = false },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("বাতিল", fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                if (dbUrlInput.isNotBlank()) {
+                                    viewModel.updateFirebaseDbUrl(dbUrlInput)
+                                    Toast.makeText(context, "ডাটাবেস ইউআরএল আপডেট হয়েছে!", Toast.LENGTH_SHORT).show()
+                                }
+                                showUrlEditDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                            modifier = Modifier.weight(1.2f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("সংরক্ষণ করুন", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
 fun DashboardCard(
     title: String,
-    subtext: String,
+    subtext: String = "",
     icon: ImageVector,
     iconColor: Color,
     modifier: Modifier = Modifier,
@@ -10359,26 +10889,23 @@ fun DashboardCard(
 ) {
     Card(
         modifier = modifier
-            .height(96.dp)
+            .height(if (subtext.isEmpty()) 52.dp else 96.dp)
             .clickable { onClick() },
         colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
+        if (subtext.isEmpty()) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(30.dp)
                         .background(iconColor.copy(alpha = 0.15f), RoundedCornerShape(8.dp)),
                     contentAlignment = Alignment.Center
                 ) {
@@ -10386,30 +10913,72 @@ fun DashboardCard(
                         imageVector = icon,
                         contentDescription = null,
                         tint = iconColor,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 }
-                Icon(
-                    imageVector = Icons.Default.ArrowForward,
-                    contentDescription = null,
-                    tint = Color(0xFF475569),
-                    modifier = Modifier.size(14.dp)
-                )
-            }
-            Column {
+
                 Text(
                     text = title,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = Color.White,
+                    modifier = Modifier.weight(1f)
                 )
-                Text(
-                    text = subtext,
-                    fontSize = 10.sp,
-                    color = Color(0xFF94A3B8),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+
+                Icon(
+                    imageVector = Icons.Default.ArrowForward,
+                    contentDescription = null,
+                    tint = Color(0xFF475569),
+                    modifier = Modifier.size(13.dp)
                 )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .background(iconColor.copy(alpha = 0.15f), RoundedCornerShape(8.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = iconColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ArrowForward,
+                        contentDescription = null,
+                        tint = Color(0xFF475569),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                Column {
+                    Text(
+                        text = title,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = subtext,
+                        fontSize = 10.sp,
+                        color = Color(0xFF94A3B8),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
